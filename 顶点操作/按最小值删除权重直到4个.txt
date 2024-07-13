@@ -1,0 +1,29 @@
+import bpy
+
+def prune_vertex_groups(obj, max_groups=4):
+    # 记录原始模式
+    original_mode = bpy.context.object.mode
+    # 确保对象处于对象模式
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # 对每个选中的顶点进行操作
+    for v in [v for v in obj.data.vertices if v.select]:
+        # 获取顶点相关的顶点组及其权重
+        group_weights = [(group.group, group.weight) for group in v.groups]
+        # 排序权重，由低到高
+        group_weights.sort(key=lambda x: x[1])
+        
+        # 如果顶点组数量超过最大允许值，则删除最低的权重组
+        while len(group_weights) > max_groups:
+            # 删除最低权重组
+            group_to_remove = group_weights.pop(0)
+            obj.vertex_groups[group_to_remove[0]].remove([v.index])
+    
+    # 恢复到原始模式
+    bpy.ops.object.mode_set(mode=original_mode)
+
+# 获取当前活跃对象
+active_obj = bpy.context.active_object
+
+# 调用函数
+prune_vertex_groups(active_obj)
