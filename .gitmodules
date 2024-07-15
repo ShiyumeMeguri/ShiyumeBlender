@@ -4,3 +4,6 @@
 [submodule "external/BakeNormalForLiltoonOutline"]
 	path = external/BakeNormalForLiltoonOutline
 	url = https://github.com/nukora/BakeNormalForLiltoonOutline
+[submodule "external/Blender_Smooth_Normals_Tool"]
+	path = external/Blender_Smooth_Normals_Tool
+	url = https://github.com/ChillyHub/Blender_Smooth_Normals_Tool
