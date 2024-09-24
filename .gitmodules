@@ -1,0 +1,15 @@
+[submodule "external/mesh-data-transfer"]
+	path = external/mesh-data-transfer
+	url = https://github.com/hannesdelbeke/mesh-data-transfer
+[submodule "external/BakeNormalForLiltoonOutline"]
+	path = external/BakeNormalForLiltoonOutline
+	url = https://github.com/nukora/BakeNormalForLiltoonOutline
+[submodule "external/Blender_Smooth_Normals_Tool"]
+	path = external/Blender_Smooth_Normals_Tool
+	url = https://github.com/ChillyHub/Blender_Smooth_Normals_Tool
+[submodule "external/NodeToPython"]
+	path = external/NodeToPython
+	url = https://github.com/BrendanParmer/NodeToPython
+[submodule "external/blender_BoneAnimCopy"]
+	path = external/blender_BoneAnimCopy
+	url = https://github.com/kumopult/blender_BoneAnimCopy
