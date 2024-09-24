@@ -880,7 +880,9 @@ def get_blenderID_key(bid):
 
 def get_blenderID_name(bid):
     if isinstance(bid, Iterable):
-        return "|".join(get_bid_name(e) for e in bid)
+        names = [get_bid_name(e) for e in bid]
+        if names:
+            return names[-1]
     else:
         return get_bid_name(bid)
 
