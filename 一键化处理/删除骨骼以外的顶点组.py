@@ -11,11 +11,22 @@ if not armature:
     raise ValueError("No armature associated with the mesh")
 bone_names = set(bone.name for bone in armature.data.bones)
 
-# 收集所有不与骨骼名称匹配的顶点组
-groups_to_remove = [group.index for group in obj.vertex_groups if group.name not in bone_names]
+# 定义要排除的顶点组名称列表
+exclude_groups = {
+    'Alpha',
+    'Red', 
+    'Blue', 
+    'Green'
+}
+
+# 收集所有不与骨骼名称匹配且不在排除列表中的顶点组
+groups_to_remove = [
+    group.index for group in obj.vertex_groups
+    if group.name not in bone_names and group.name not in exclude_groups
+]
 
 # 逆向遍历确保在删除过程中不会打乱顶点组索引
 for idx in reversed(groups_to_remove):
     obj.vertex_groups.remove(obj.vertex_groups[idx])
 
-print(f"Removed {len(groups_to_remove)} vertex groups not matching any bone")
+print(f"Removed {len(groups_to_remove)} vertex groups not matching any bone or in the exclude list")
