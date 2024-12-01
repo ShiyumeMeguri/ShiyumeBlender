@@ -25,22 +25,32 @@ for obj in bpy.data.objects:
     if obj.name not in processed_object_ids:
         original_name = obj.name
 
-        # 检查并移除已有的前缀
+        # 检查是否已有前缀并且符合命名规范
         if original_name.startswith(object_prefix):
-            base_name = original_name[len(object_prefix):]
+            base_name_with_number = original_name[len(object_prefix):]  # 截取掉前缀部分
+            match = re.match(r"(.+?)_(\d{2})$", base_name_with_number)  # 匹配类似 'name_01' 的模式
+            if match:
+                # 如果名字已经有编号，不做修改
+                clean_base_name, count = match.groups()
+                new_name = original_name  # 保持原名不变
+            else:
+                # 没有编号的情况下，提取名字并重新编号
+                clean_base_name = clean_name(base_name_with_number)
+                if clean_base_name not in object_name_counts:
+                    object_name_counts[clean_base_name] = 1
+                else:
+                    object_name_counts[clean_base_name] += 1
+                count = object_name_counts[clean_base_name]
+                new_name = f"{object_prefix}{clean_base_name}_{count:02d}"
         else:
-            base_name = original_name
-
-        clean_base_name = clean_name(base_name)
-
-        # 如果该名字已经存在，则增加计数，直到找到未使用的编号
-        if clean_base_name not in object_name_counts:
-            object_name_counts[clean_base_name] = 1
-        else:
-            object_name_counts[clean_base_name] += 1
-
-        count = object_name_counts[clean_base_name]
-        new_name = f"{object_prefix}{clean_base_name}_{count:02d}"
+            # 原名不带前缀的情况，重新处理
+            clean_base_name = clean_name(original_name)
+            if clean_base_name not in object_name_counts:
+                object_name_counts[clean_base_name] = 1
+            else:
+                object_name_counts[clean_base_name] += 1
+            count = object_name_counts[clean_base_name]
+            new_name = f"{object_prefix}{clean_base_name}_{count:02d}"
 
         # 更新对象名字
         obj.name = new_name
@@ -51,46 +61,57 @@ for obj in bpy.data.objects:
 # 同样的过程应用于材质球
 processed_material_ids = set()
 material_name_counts = {}
+
 for material in bpy.data.materials:
     if material.name not in processed_material_ids:
         original_name = material.name
-        if original_name.startswith(material_prefix):
-            base_name = original_name[len(material_prefix):]
-        else:
-            base_name = original_name
 
-        clean_base_name = clean_name(base_name)
-        if clean_base_name not in material_name_counts:
-            material_name_counts[clean_base_name] = 1
+        # 检查是否已有前缀并且符合命名规范
+        if original_name.startswith(material_prefix):
+            base_name_with_number = original_name[len(material_prefix):]
+            match = re.match(r"(.+?)_(\d{2})$", base_name_with_number)
+            if match:
+                # 如果名字已经有编号，不做修改
+                clean_base_name, count = match.groups()
+                new_name = original_name  # 保持原名不变
+            else:
+                # 没有编号的情况下，提取名字并重新编号
+                clean_base_name = clean_name(base_name_with_number)
+                if clean_base_name not in material_name_counts:
+                    material_name_counts[clean_base_name] = 1
+                else:
+                    material_name_counts[clean_base_name] += 1
+                count = material_name_counts[clean_base_name]
+                new_name = f"{material_prefix}{clean_base_name}_{count:02d}"
         else:
-            material_name_counts[clean_base_name] += 1
-        
-        count = material_name_counts[clean_base_name]
-        new_name = f"{material_prefix}{clean_base_name}_{count:02d}"
-        
+            # 原名不带前缀的情况，重新处理
+            clean_base_name = clean_name(original_name)
+            if clean_base_name not in material_name_counts:
+                material_name_counts[clean_base_name] = 1
+            else:
+                material_name_counts[clean_base_name] += 1
+            count = material_name_counts[clean_base_name]
+            new_name = f"{material_prefix}{clean_base_name}_{count:02d}"
+
+        # 更新材质名字
         material.name = new_name
         processed_material_ids.add(new_name)
 
         print(f'Renamed "{original_name}" to "{new_name}"')
 
-# Todo这个可以和上一条合并 重命名贴图为材质球的名字
+# 重命名贴图为材质球的名字
 def rep_material_name(name):
-    # Implement any name cleaning logic you need here
     return name.replace(" ", "_")
 
-# Set the prefix for materials and textures
 material_prefix = "Mat_"
 texture_prefix = "Tex_"
 
 for material in bpy.data.materials:
     original_name = material.name
-    # Check if the material name starts with 'Mat_'
     if original_name.startswith(material_prefix):
-        # Compute the new base name for textures
         base_name = original_name[len(material_prefix):]
         new_texture_name = texture_prefix + rep_material_name(base_name)
         
-        # Update all textures associated with this material
         if material.use_nodes:
             for node in material.node_tree.nodes:
                 if node.type == 'TEX_IMAGE' and node.image:
@@ -99,14 +120,11 @@ for material in bpy.data.materials:
                     new_filename = new_texture_name + os.path.splitext(old_filename)[1]
                     new_path = os.path.join(directory, new_filename)
 
-                    # Rename the image in Blender
                     node.image.name = new_texture_name
 
-                    # Check if the file exists and rename it
                     if os.path.exists(old_path):
                         try:
                             os.rename(old_path, new_path)
-                            # Update the filepath in the image datablock to the new path
                             node.image.filepath = bpy.path.relpath(new_path)
                             print(f"Renamed texture '{old_filename}' to '{new_filename}' and updated path to '{new_path}'")
                         except Exception as e:
@@ -114,4 +132,4 @@ for material in bpy.data.materials:
                     else:
                         print(f"File '{old_path}' not found, unable to rename to '{new_path}'")
 
-print("All objects and materials have been renamed.")
+print("All objects, materials, and textures have been renamed.")
