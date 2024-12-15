@@ -1,3 +1,4 @@
+import bmesh
 import typing
 import bpy
 from bpy.types import Context
@@ -194,119 +195,87 @@ class Bone_OT_getpostion(bpy.types.Operator):
                     pass
                 self.report({'INFO'},'开始计算线段')
                 bone_obj=arm_obj
+                collection_name = f"SoftBodyDynamics_{bone_obj.name}"
 
-                if bone_obj.name in bpy.data.collections:
+                if collection_name in bpy.data.collections:
                     self.report({'WARNING'},'场景中存在与骨架集合一致的集合,请先删除该集合!')
                     return {'FINISHED'}
                 else:
-                    collection=bpy.data.collections.new(bone_obj.name)  #新建一个集合
+                    collection=bpy.data.collections.new(collection_name)  #新建一个集合
                     bpy.context.scene.collection.children.link(collection)
                     self.coll_bool=True
                     
                 find_bone=[bone.name for bone in bone_obj.data.bones if bone.select] #循环获取骨骼选定的对象
                 for bone_name in find_bone:
-                    
                     bone_postion=bone_obj.pose.bones[bone_name]
 
-                    bone_postion_tou=bone_postion.head
-                    bone_postion_wei=bone_postion.tail
+                    local_bone_postion_tou=bone_postion.head
+                    local_bone_postion_wei=bone_postion.tail
 
-                #核心逻辑
-                #创建第一个"tou"对象
-                    bpy.ops.mesh.primitive_plane_add(size=2,enter_editmode=True,align='WORLD',location=(0,0,0))
-                    plane1=bpy.context.object
+                    global_bone_postion_tou = arm_obj.matrix_world @ local_bone_postion_tou
+                    global_bone_postion_wei = arm_obj.matrix_world @ local_bone_postion_wei
 
-                    bpy.ops.object.mode_set(mode='EDIT') #进入编辑模式
-                    bpy.ops.mesh.select_all(action='SELECT')#全选所有点
-                    bpy.ops.mesh.merge(type='CENTER')#合并成一个点
+                    mesh = bpy.data.meshes.new(bone_name + "_mesh")
+                    bm = bmesh.new()
 
-                #修改第一个点位置
-                    bpy.ops.transform.translate(value=bone_postion_tou)
+                    # 创建两个顶点，分别对应骨骼的头部和尾部位置
+                    v1 = bm.verts.new(global_bone_postion_tou)
+                    v2 = bm.verts.new(global_bone_postion_wei)
+                    bm.verts.ensure_lookup_table()
 
-                #回到物体模式
-                    bpy.ops.object.mode_set(mode='OBJECT')
+                    # 创建连接两个点的边
+                    bm.edges.new([v1, v2])
+                    bm.edges.ensure_lookup_table()
 
-                #建立顶点组命名为"tou"
-                    bpy.ops.object.vertex_group_add()
-                    vertex_group = plane1.vertex_groups.new(name="tou")
-        
-                #指定顶点组为1
-                    for vertex in plane1.data.vertices:
-                        vertex_group.add([vertex.index], 1.0, 'REPLACE')
+                    bm.normal_update()
 
-                
-                #建立第二个对象panel2
+                    # 将 bmesh 数据写入到新建的 mesh
+                    bm.to_mesh(mesh)
+                    bm.free()
 
-                    bpy.ops.mesh.primitive_plane_add(size=2,enter_editmode=True,align='WORLD',location=(0,0,0))
-                    plane2=bpy.context.object
+                    # 更新mesh数据
+                    mesh.update()
+                    mesh.validate()
 
-                    bpy.ops.object.mode_set(mode='EDIT') 
-                    bpy.ops.mesh.select_all(action='SELECT')
-                    bpy.ops.mesh.merge(type='CENTER')#合并成一个点
+                    # 创建对象并链接到集合或场景
+                    line_obj = bpy.data.objects.new(bone_name, mesh)
+                    if self.coll_bool:
+                        collection = bpy.data.collections.get(collection_name)
+                        if collection:
+                            collection.objects.link(line_obj)
+                        else:
+                            print("集合创建无效")
+                            
+                    # 为line_obj创建"tou"和"wei"两个顶点组
+                    vg_tou = line_obj.vertex_groups.new(name="tou")
+                    vg_wei = line_obj.vertex_groups.new(name="wei")
+                    # 将第一个顶点(索引0)分配到"tou"组,第二个顶点(索引1)分配到"wei"组
+                    vg_tou.add([0], 1.0, 'REPLACE')
+                    vg_wei.add([1], 1.0, 'REPLACE')
 
-                
-                    bpy.ops.transform.translate(value=bone_postion_wei)
-
-              
-                    bpy.ops.object.mode_set(mode='OBJECT')
-
-        
-                    bpy.ops.object.vertex_group_add()
-                    vertex_group = plane2.vertex_groups.new(name="wei")
-        
-                #指定顶点组为1
-                    for vertex in plane2.data.vertices:
-                        vertex_group.add([vertex.index], 1.0, 'REPLACE')
-
-           
-                #合并两个物体
-                    bpy.ops.object.select_all(action='DESELECT')
-                    plane1.select_set(True)
-                    plane2.select_set(True)
-                    bpy.ops.object.join()
-
-                #进入编辑模式,将两个点连线一起
-                    new_panel_name=bpy.context.object
-                    bpy.ops.object.mode_set(mode='EDIT')
-                    bpy.ops.mesh.select_all(action='SELECT')
-                    bpy.ops.mesh.edge_face_add() #所有点"F"的代码
- 
-                #回到物体模式,并且改名
-                    bpy.ops.object.mode_set(mode='OBJECT')
-                    new_panel_name.name=bone_name
-
-                #判断集合存在,并且是否放入
-                    if self.coll_bool == True:
-                        collection=bpy.data.collections.get(bone_obj.name)#获取该集合信息
-
-                        add_obj=bpy.data.objects.get(bone_name)
-                        collection.objects.link(add_obj)
-                    else:
-                        print('集合创建无效')
-            #判断是否回到中心
+                #判断是否回到中心
                 if self.is_panel_on == True:
                     self.report({'INFO'},'正在让物体坐标回中心')
-                    coll_name=bone_obj.name
-                    find_coll=bpy.data.collections.get(coll_name)
+                    find_coll=bpy.data.collections.get(collection_name)
                     if find_coll:
                         for obj in find_coll.objects:
-                            bpy.ops.object.select_all(action='DESELECT')
-                            bpy.context.view_layer.objects.active=obj
+                            bpy.context.view_layer.objects.active = obj
                             obj.select_set(True)
-                            bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='MEDIAN')  
-                            bpy.ops.object.select_all(action='DESELECT')
+                            bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='MEDIAN')
+                            #obj.select_set(False)
                     else:
                         self.report({'ERROR'},'没有寻找到存放物体的集合')
                         return {'FINISHED'}  
+
                     
                 self.report({'INFO'},'回中心完成!')
             #隐藏排除集合
                 view_layer=bpy.context.view_layer
-                get_view_coll=bpy.data.collections[bone_obj.name]
+                get_view_coll=bpy.data.collections[collection_name]
 
                 for view_col in bpy.data.collections:
                     if view_col==get_view_coll:
-                        view_layer.layer_collection.children[view_col.name].exclude = True
+                        #view_layer.layer_collection.children[view_col.name].exclude = True
                         self.report({'INFO'},'[存在集合]创建完成！')
                     else:
                         pass
@@ -342,7 +311,7 @@ class DELET_OT_OBJCOLL(bpy.types.Operator):
             return {'FINISHED'}
 
         if arm_obj.type == 'ARMATURE': #判断是否选中的为骨架
-            coll_get=bpy.data.collections.get(arm_obj.name)
+            coll_get=bpy.data.collections.get(f"SoftBodyDynamics_{arm_obj.name}")
 
             if coll_get is not None:  #判断是否有集合对象
                 for obj in coll_get.objects: #循环删除集合里的对象
@@ -378,7 +347,7 @@ class Skin_OT_Bone(bpy.types.Operator):
         if arm_obj is not None:
             arm_name=arm_obj.name
             if arm_obj.type == 'ARMATURE':
-                coll_name=arm_name   #如果存在获取其名字
+                coll_name=f"SoftBodyDynamics_{arm_name}"   #如果存在获取其名字
                 #加限制防止出大BUG
                 if coll_name in bpy.data.collections:
                     coll=bpy.data.collections[coll_name]
@@ -394,7 +363,7 @@ class Skin_OT_Bone(bpy.types.Operator):
                     self.report({'ERROR'},'不存在集合,请先创建线段')
                     return {'FINISHED'} 
            
-                get_Bone_data=bpy.data.objects[coll_name] #获取骨架信息
+                get_Bone_data=bpy.data.objects[arm_name] #获取骨架信息
                 collection=bpy.data.collections.get(coll_name) #获取命名一致的集合属性
 
                 for obj in collection.objects:
@@ -418,7 +387,7 @@ class Skin_OT_Bone(bpy.types.Operator):
                             seletd_1=bpy.data.objects[select_name] #获取第一个初始对象OBJ
                             seletd_1.select_set(True)  #选中状态
 
-                            bone_2=bpy.data.objects[coll_name] #获取到骨架对象
+                            bone_2=bpy.data.objects[arm_name] #获取到骨架对象
                             bone_2.select_set(True)  #选中状态
 
                             bpy.context.view_layer.objects.active = get_Bone_data #将活动对象先设置为骨架
@@ -470,7 +439,7 @@ class Setting_OT_Bone(bpy.types.Operator):
         if arm_obj is not None:
 
             arm_name=arm_obj.name
-            coll_name=arm_name #str
+            coll_name=f"SoftBodyDynamics_{arm_name}"
             if coll_name in bpy.data.collections:
                 coll=bpy.data.collections[coll_name]
                 if len(coll.objects)> 0 :
@@ -480,7 +449,7 @@ class Setting_OT_Bone(bpy.types.Operator):
                     return {'FINISHED'}
                    
                 bone=bpy.data.objects[arm_name]   
-                coll=bpy.data.collections[arm_name]
+                coll=bpy.data.collections[coll_name]
         
                 for c in coll.objects:   #获取集合内的每个物体
                     bpy.context.view_layer.objects.active = bone 
@@ -543,7 +512,7 @@ class Setting_OT_Modifiers(bpy.types.Operator):
         if arm_obj is not None:
             arm_name=arm_obj.name
             if arm_obj.type=='ARMATURE':
-                obj_name=arm_name
+                obj_name=f"SoftBodyDynamics_{arm_name}"
 
                 if obj_name in bpy.data.collections:
                     coll=bpy.data.collections[obj_name]
@@ -701,7 +670,7 @@ class Bake_OT_Setting(bpy.types.Operator):
 
         for obj in bpy.data.objects:
             if obj.type=='ARMATURE':
-                obj_name=obj.name
+                obj_name=f"SoftBodyDynamics_{obj.name}"
 
                 if obj_name in bpy.data.collections:
                     coll=bpy.data.collections[obj_name]
