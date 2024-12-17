@@ -39,6 +39,16 @@ def create_uv_projection_mesh():
     bm.to_mesh(mesh_data)
     bm.free()
 
+    # 设置新对象为活动状态，以便执行remove_doubles
+    bpy.context.view_layer.objects.active = uv_mesh
+    uv_mesh.select_set(True)
+    
+    # 进入编辑模式并全选，合并相邻顶点
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')  # 全选顶点
+    bpy.ops.mesh.remove_doubles()  # 合并相邻顶点
+    bpy.ops.object.mode_set(mode='OBJECT')  # 返回对象模式
+
     return uv_mesh
     
 # 使用示例
