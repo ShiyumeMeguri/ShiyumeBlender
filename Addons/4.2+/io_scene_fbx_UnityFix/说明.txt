@@ -1,0 +1,15 @@
+修复导出到Unity时 Root骨架不是作为根对象的问题 Armature对象会 傻逼Blender官方说是设计上差异不属于bug所以常年不修
+当Armature名字是角色名时 根骨骼会变成这样 就导致动画无法通用 因为unity是按名称映射的
+Chiruha
+    Chiruha <- 名称查找时出问题
+        Root
+    Mesh1
+    Mesh2
+    Mesh3
+    
+Meguri
+    Meguri <- 名称查找时出问题
+        Root
+    Mesh1
+    Mesh2
+    Mesh3
