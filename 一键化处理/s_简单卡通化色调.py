@@ -50,10 +50,23 @@ def process_image(image_path, output_folder):
     overlay_result = overlay_mix(mult_result, value_result, 0.5)
     final_rgb = gamma_encode(overlay_result)
     final_result = np.dstack((final_rgb, alpha_data))
-    output_image = Image.fromarray(np.uint8(final_result.clip(0, 255)))
+
+    output_image = Image.fromarray(np.uint8(final_result.clip(0, 255)), 'RGBA')
+
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-    output_image.save(os.path.join(output_folder, os.path.basename(image_path)))
+
+    # 确保使用合适的保存格式
+    output_path = os.path.join(output_folder, os.path.basename(image_path))
+    if output_path.lower().endswith('.jpg') or output_path.lower().endswith('.jpeg'):
+        # 将RGBA转换为RGB，以便JPEG兼容
+        output_image = output_image.convert('RGB')
+        output_path = output_path.rsplit('.', 1)[0] + '.jpg'  # 确保扩展名正确
+    else:
+        output_path = output_path.rsplit('.', 1)[0] + '.png'  # 默认保存为PNG
+
+    output_image.save(output_path)
+
 
 def main(folder=None):
     if folder is None:
@@ -61,10 +74,16 @@ def main(folder=None):
     else:
         folder = sys.argv[1]  # Use specified folder if provided
     output_folder = os.path.join(folder, 'OutputTex')
-    image_files = glob.glob(os.path.join(folder, '*.png'))  # Adjust the pattern if necessary
+
+    # Support multiple image formats
+    image_extensions = ('*.png', '*.jpg', '*.jpeg', '*.bmp', '*.tiff', '*.tif')
+    image_files = []
+    for ext in image_extensions:
+        image_files.extend(glob.glob(os.path.join(folder, ext)))
 
     for image_file in image_files:
         process_image(image_file, output_folder)
+
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
