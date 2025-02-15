@@ -1,21 +1,13 @@
 import bpy
 
-# 获取当前时间线的结束帧
-timeline_end_frame = bpy.context.scene.frame_end
-
-# 获取场景中所有动作
-actions = bpy.data.actions
-
-# 删除动作中超出时间线结束帧的关键帧
-for action in actions:
-    print(f"Checking action: {action.name}")
+for action in bpy.data.actions:
+    print(f"处理动作: {action.name}")
     
-    for fcurve in action.fcurves:
-        # 倒序遍历关键帧，以避免删除时影响索引
-        for i in range(len(fcurve.keyframe_points)-1, -1, -1):
-            keyframe = fcurve.keyframe_points[i]
-            if keyframe.co.x > timeline_end_frame:
-                print(f"  Removing keyframe at frame {keyframe.co.x} on fcurve {fcurve.data_path}")
-                fcurve.keyframe_points.remove(keyframe)
-
-print(f"Finished cleaning up keyframes beyond frame {timeline_end_frame}.")
+    # 反向遍历 fcurves 列表，安全删除 fcurve
+    for i in range(len(action.fcurves)-1, -1, -1):
+        fcurve = action.fcurves[i]
+        if '"]["' in fcurve.data_path:
+            print(f"  删除自定义属性 fcurve: {fcurve.data_path}")
+            action.fcurves.remove(fcurve)
+    
+    print(f"动作 {action.name} 处理完成。\n")
