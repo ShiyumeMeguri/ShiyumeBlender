@@ -7,8 +7,8 @@ processed_meshes = set()
 scale_factor = 100
 bake_factor = 0.01
 
-# 遍历场景中所有对象
-for obj in bpy.context.scene.objects:
+# 遍历选中的对象
+for obj in bpy.context.selected_objects:
     # 如果对象有 scale 属性，则更新它
     if hasattr(obj, 'scale'):
         obj.scale = obj.scale * scale_factor
@@ -22,4 +22,4 @@ for obj in bpy.context.scene.objects:
             # 记录已经处理的网格数据
             processed_meshes.add(obj.data)
 
-print("已将全局0.01缩放烘焙到网格数据中，对象自身的缩放更新为原来的100倍，视觉上保持不变。")
+print("已将选中对象的0.01缩放烘焙到网格数据中，对象自身的缩放更新为原来的100倍，视觉上保持不变。")
