@@ -1,7 +1,7 @@
 import bpy
 import os
 
-def modify_mesh(obj):
+def ModifyMesh(obj):
     # Check if a duplicate already exists
     duplicate_name = f"{obj.name}_duplicate"
     if bpy.data.objects.get(duplicate_name):
@@ -13,7 +13,9 @@ def modify_mesh(obj):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj  # Ensure the object is active
     bpy.ops.object.duplicate()
-    duplicate_obj = bpy.context.selected_objects[0]
+
+    # Retrieve the newly duplicated object
+    duplicate_obj = bpy.context.active_object
     duplicate_obj.name = duplicate_name
     
     # Move the duplicate 0.1m downwards
@@ -23,34 +25,30 @@ def modify_mesh(obj):
     bpy.context.view_layer.objects.active = duplicate_obj  # Make the duplicate active
     bpy.ops.object.mode_set(mode='EDIT')
     
-    # Select all vertices
+    # Select all vertices and remove doubles
     bpy.ops.mesh.select_all(action='SELECT')
-    
-    # Remove doubles (merge vertices)
     bpy.ops.mesh.remove_doubles()
     
     # Return to object mode
     bpy.ops.object.mode_set(mode='OBJECT')
     
     # Add Solidify modifiers
-    solidify_1 = duplicate_obj.modifiers.new(name="Solidify_1", type='SOLIDIFY')
-    
-    solidify_2 = duplicate_obj.modifiers.new(name="Solidify_2", type='SOLIDIFY')
-    solidify_2.thickness = 0.002
-    solidify_2.offset = 1
+    solidify1 = duplicate_obj.modifiers.new(name="SOLIDIFY_1", type='SOLIDIFY')
+    solidify2 = duplicate_obj.modifiers.new(name="SOLIDIFY_2", type='SOLIDIFY')
+    solidify2.thickness = 0.002
+    solidify2.offset = 1
 
-    # Keep the modifiers without applying them
 
-def setup_camera_and_render_settings(resolution):
+def SetupCameraAndRenderSettings(resolution):
     # Record original settings
     original_camera = bpy.context.scene.camera
-    original_render_engine = bpy.context.scene.render.engine
-    original_dither_intensity = bpy.context.scene.render.dither_intensity
+    original_engine = bpy.context.scene.render.engine
+    original_dither = bpy.context.scene.render.dither_intensity
     original_light = bpy.context.scene.display.shading.light
-    original_color_type = bpy.context.scene.display.shading.color_type
-    original_resolution_x = bpy.context.scene.render.resolution_x
-    original_resolution_y = bpy.context.scene.render.resolution_y
-    original_film_transparent = bpy.context.scene.render.film_transparent
+    original_color = bpy.context.scene.display.shading.color_type
+    original_res_x = bpy.context.scene.render.resolution_x
+    original_res_y = bpy.context.scene.render.resolution_y
+    original_transparent = bpy.context.scene.render.film_transparent
 
     # Ensure there's a camera, create if necessary
     camera = bpy.data.objects.get('UV_Camera')
@@ -59,15 +57,10 @@ def setup_camera_and_render_settings(resolution):
         camera = bpy.data.objects.new('UV_Camera', camera_data)
         bpy.context.scene.collection.objects.link(camera)
     
-    # Set camera to orthographic projection
     camera.data.type = 'ORTHO'
     camera.data.ortho_scale = 1
-
-    # Set camera position
     camera.location = (0.5, 0.5, 1)
     camera.rotation_euler = (0, 0, 0)
-
-    # Set as active camera
     bpy.context.scene.camera = camera
 
     # Set render engine to Workbench and adjust settings
@@ -81,66 +74,68 @@ def setup_camera_and_render_settings(resolution):
     bpy.context.scene.render.resolution_y = resolution
     bpy.context.scene.render.film_transparent = True
     
-    # Return original settings as a dictionary
     return {
-        "camera": original_camera,
-        "render_engine": original_render_engine,
-        "dither_intensity": original_dither_intensity,
-        "light": original_light,
-        "color_type": original_color_type,
-        "resolution_x": original_resolution_x,
-        "resolution_y": original_resolution_y,
-        "film_transparent": original_film_transparent
+        'camera': original_camera,
+        'engine': original_engine,
+        'dither': original_dither,
+        'light': original_light,
+        'color': original_color,
+        'res_x': original_res_x,
+        'res_y': original_res_y,
+        'transparent': original_transparent
     }
 
-def restore_original_settings(original_settings):
-    # Restore original settings
-    bpy.context.scene.camera = original_settings["camera"]
-    bpy.context.scene.render.engine = original_settings["render_engine"]
-    bpy.context.scene.render.dither_intensity = original_settings["dither_intensity"]
-    bpy.context.scene.display.shading.light = original_settings["light"]
-    bpy.context.scene.display.shading.color_type = original_settings["color_type"]
-    bpy.context.scene.render.resolution_x = original_settings["resolution_x"]
-    bpy.context.scene.render.resolution_y = original_settings["resolution_y"]
-    bpy.context.scene.render.film_transparent = original_settings["film_transparent"]
 
-def render_uv_projections_to_texture(resolution=4096):
+def RestoreOriginalSettings(settings):
+    bpy.context.scene.camera = settings['camera']
+    bpy.context.scene.render.engine = settings['engine']
+    bpy.context.scene.render.dither_intensity = settings['dither']
+    bpy.context.scene.display.shading.light = settings['light']
+    bpy.context.scene.display.shading.color_type = settings['color']
+    bpy.context.scene.render.resolution_x = settings['res_x']
+    bpy.context.scene.render.resolution_y = settings['res_y']
+    bpy.context.scene.render.film_transparent = settings['transparent']
+
+
+def RenderUVProjectionsToTexture(resolution=2048):
     # Create directory for textures
-    blend_file_path = bpy.data.filepath
-    directory = os.path.join(os.path.dirname(blend_file_path), "Textures")
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+    blend_path = bpy.data.filepath
+    tex_dir = os.path.join(os.path.dirname(blend_path), 'Textures')
+    os.makedirs(tex_dir, exist_ok=True)
 
-    # Get or create the UVSync collection
-    uv_sync_collection = bpy.data.collections.get("UVSync")
-    if not uv_sync_collection:
-        print("UVSync collection does not exist.")
+    # Get UVSync collection
+    uv_sync = bpy.data.collections.get('UVSync')
+    if not uv_sync:
+        print('UVSync collection does not exist.')
         return
 
     # Setup camera and render settings
-    original_settings = setup_camera_and_render_settings(resolution)
+    orig_settings = SetupCameraAndRenderSettings(resolution)
 
-    # Hide all objects for rendering only UVSync objects
+    # Hide all objects, then show only UVSync meshes after duplication
     for obj in bpy.data.objects:
         obj.hide_render = True
 
-    # Modify each object in the UVSync collection
-    for obj in uv_sync_collection.objects:
+    for obj in uv_sync.objects:
         if obj.type == 'MESH':
-            modify_mesh(obj)
+            ModifyMesh(obj)
             obj.hide_render = False
 
-    # Render to texture
-    output_file = os.path.join(directory, "UVSync_Combined.png")
-    bpy.context.scene.render.filepath = output_file
+    # Render to texture, avoid overwriting same name
+    baseName = 'UVSync_Combined'
+    filename = f"{baseName}.png"
+    count = 1
+    while os.path.exists(os.path.join(tex_dir, filename)):
+        filename = f"{baseName}_{count}.png"
+        count += 1
+    output = os.path.join(tex_dir, filename)
 
-    # Execute rendering
+    bpy.context.scene.render.filepath = output
     bpy.ops.render.render(write_still=True)
+    print(f"Combined texture saved to '{output}'")
 
-    print(f"Combined texture saved to '{output_file}'")
+    # Restore original settings
+    RestoreOriginalSettings(orig_settings)
 
-    # Restore original settings after rendering
-    restore_original_settings(original_settings)
-
-# Example usage
-render_uv_projections_to_texture()
+# Execute
+RenderUVProjectionsToTexture()
