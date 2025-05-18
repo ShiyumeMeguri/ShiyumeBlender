@@ -102,6 +102,6 @@ for arm in roots:
                 # 渲染并保存
                 scene.render.filepath = os.path.join(
                     out_dir,
-                    f"{arm.name}_{mode}_{yaw}_{pitch}.png"
+                    f"{mode}_{yaw}_{pitch}_{arm.name}.png"
                 )
                 bpy.ops.render.render(write_still=True)
