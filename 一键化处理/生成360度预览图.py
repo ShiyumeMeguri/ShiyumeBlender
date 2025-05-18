@@ -1,6 +1,14 @@
 import bpy, os, math
 from mathutils import Vector
 
+# 顶部变量：控制是否开启正交渲染和透视渲染
+enable_ortho = True
+enable_persp = True
+
+# 缩放系数
+ortho_scale = 1.05
+persp_extra = 1.5
+
 scene = bpy.context.scene
 
 # 分辨率设置：正方形 2048×2048
@@ -13,7 +21,7 @@ out_dir = bpy.path.abspath("//renders")
 if not os.path.exists(out_dir):
     os.makedirs(out_dir)
 
-# 渲染设置：使用 Workbench 引擎、正交、无光照扁平渲染，保留贴图
+# 渲染设置：使用 Workbench 引擎、无光照扁平渲染，保留贴图
 scene.render.engine = 'BLENDER_WORKBENCH'
 scene.display.shading.light = 'FLAT'
 scene.display.shading.color_type = 'TEXTURE'
@@ -28,14 +36,16 @@ if cam_obj and cam_obj.type == 'CAMERA':
     cam_data = cam.data
 else:
     cam_data = bpy.data.cameras.new(cam_name)
-    cam_data.type = 'ORTHO'
     cam = bpy.data.objects.new(cam_name, cam_data)
     scene.collection.objects.link(cam)
 scene.camera = cam
-cam_data.type = 'ORTHO'
 
-# 正交放大系数（小于2.0会让角色看起来更“贴近”画面）
-scale_factor = 1.05
+# 根据控制变量决定渲染模式列表
+modes = []
+if enable_ortho:
+    modes.append('ORTHO')
+if enable_persp:
+    modes.append('PERSP')
 
 # 找到所有根骨骼并逐个渲染
 roots = [o for o in scene.objects if o.type == 'ARMATURE' and o.parent is None]
@@ -48,7 +58,7 @@ for arm in roots:
     for m in meshes:
         m.hide_render = False
 
-    # 计算选中网格的世界包围盒中心和最大尺寸
+    # 计算包围盒中心和最大尺寸
     coords = []
     for m in meshes:
         for v in m.bound_box:
@@ -67,24 +77,31 @@ for arm in roots:
         center = arm.location.copy()
         max_dim = 1
 
-    # 应用更紧凑的正交范围
-    cam_data.ortho_scale = max_dim * scale_factor
+    # 按照选定模式渲染
+    for mode in modes:
+        cam_data.type = mode
+        if mode == 'ORTHO':
+            cam_data.ortho_scale = max_dim * ortho_scale
+            dist = max_dim * ortho_scale
+        else:
+            dist = max_dim * ortho_scale * persp_extra
 
-    # 绕中心每45°一圈，三个俯仰角
-    for yaw in range(0, 360, 45):
-        for pitch in (0, 20, -20):
-            phi = math.radians(90 - pitch)
-            theta = math.radians(yaw)
-            r = max_dim * scale_factor
-            x = center.x + r * math.sin(phi) * math.cos(theta)
-            y = center.y + r * math.sin(phi) * math.sin(theta)
-            z = center.z + r * math.cos(phi)
-            cam.location = (x, y, z)
+        for yaw in range(0, 360, 45):
+            for pitch in (0, 20, -20):
+                phi = math.radians(90 - pitch)
+                theta = math.radians(yaw)
+                x = center.x + dist * math.sin(phi) * math.cos(theta)
+                y = center.y + dist * math.sin(phi) * math.sin(theta)
+                z = center.z + dist * math.cos(phi)
+                cam.location = (x, y, z)
 
-            # 朝向模型中心
-            direction = center - cam.location
-            cam.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+                # 朝向模型中心
+                direction = center - cam.location
+                cam.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
 
-            # 渲染并保存
-            scene.render.filepath = os.path.join(out_dir, f"{arm.name}_{yaw}_{pitch}.png")
-            bpy.ops.render.render(write_still=True)
+                # 渲染并保存
+                scene.render.filepath = os.path.join(
+                    out_dir,
+                    f"{arm.name}_{mode}_{yaw}_{pitch}.png"
+                )
+                bpy.ops.render.render(write_still=True)
