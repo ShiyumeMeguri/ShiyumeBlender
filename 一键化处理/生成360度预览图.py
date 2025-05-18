@@ -3,6 +3,11 @@ from mathutils import Vector
 
 scene = bpy.context.scene
 
+# 分辨率设置：正方形 2048×2048
+scene.render.resolution_x = 2048
+scene.render.resolution_y = 2048
+scene.render.resolution_percentage = 100
+
 # 输出文件夹
 out_dir = bpy.path.abspath("//renders")
 if not os.path.exists(out_dir):
@@ -28,6 +33,9 @@ else:
     scene.collection.objects.link(cam)
 scene.camera = cam
 cam_data.type = 'ORTHO'
+
+# 正交放大系数（小于2.0会让角色看起来更“贴近”画面）
+scale_factor = 1.05
 
 # 找到所有根骨骼并逐个渲染
 roots = [o for o in scene.objects if o.type == 'ARMATURE' and o.parent is None]
@@ -59,14 +67,15 @@ for arm in roots:
         center = arm.location.copy()
         max_dim = 1
 
-    cam_data.ortho_scale = max_dim * 2
+    # 应用更紧凑的正交范围
+    cam_data.ortho_scale = max_dim * scale_factor
 
     # 绕中心每45°一圈，三个俯仰角
     for yaw in range(0, 360, 45):
-        for pitch in (0, 30, -30):
+        for pitch in (0, 20, -20):
             phi = math.radians(90 - pitch)
             theta = math.radians(yaw)
-            r = max_dim * 2
+            r = max_dim * scale_factor
             x = center.x + r * math.sin(phi) * math.cos(theta)
             y = center.y + r * math.sin(phi) * math.sin(theta)
             z = center.z + r * math.cos(phi)
