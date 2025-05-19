@@ -9,6 +9,10 @@ enable_persp = True
 ortho_scale = 1.05
 persp_extra = 1.5
 
+# 旋转步长：默认90度，即前后左右
+yaw_step = 90
+pitch_step = 20
+
 scene = bpy.context.scene
 
 # 分辨率设置：正方形 2048×2048
@@ -86,8 +90,8 @@ for arm in roots:
         else:
             dist = max_dim * ortho_scale * persp_extra
 
-        for yaw in range(0, 360, 45):
-            for pitch in (0, 20, -20):
+        for yaw in range(0, 360, yaw_step):
+            for pitch in (0, pitch_step, -pitch_step):
                 phi = math.radians(90 - pitch)
                 theta = math.radians(yaw)
                 x = center.x + dist * math.sin(phi) * math.cos(theta)
