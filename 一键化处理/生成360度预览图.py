@@ -11,13 +11,13 @@ persp_extra = 1.5
 
 # 旋转步长：默认90度，即前后左右
 yaw_step = 90
-pitch_step = 20
+pitch_step = 30
 
 scene = bpy.context.scene
 
-# 分辨率设置：正方形 2048×2048
-scene.render.resolution_x = 2048
-scene.render.resolution_y = 2048
+# 分辨率设置：正方形 改这么高是为了之后生成半身和 脸部聚焦
+scene.render.resolution_x = 4096
+scene.render.resolution_y = 4096
 scene.render.resolution_percentage = 100
 
 # 输出文件夹
@@ -51,10 +51,10 @@ if enable_ortho:
 if enable_persp:
     modes.append('PERSP')
 
-# 找到所有根骨骼并逐个渲染
-roots = [o for o in scene.objects if o.type == 'ARMATURE' and o.parent is None]
+# 找到场景所有根对象并逐个渲染
+roots = [o for o in scene.objects if o.parent is None]
 for arm in roots:
-    # 隐藏所有物体，仅显示当前骨骼及其子网格
+    # 隐藏所有物体，仅显示当前根对象及其子网格
     for o in scene.objects:
         o.hide_render = True
     arm.hide_render = False
