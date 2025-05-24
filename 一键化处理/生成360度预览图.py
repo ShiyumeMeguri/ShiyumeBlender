@@ -32,6 +32,12 @@ scene.display.shading.color_type = 'TEXTURE'
 scene.display.shading.use_scene_lights = False
 scene.display.shading.use_scene_world = False
 
+# --- 透明输出（新增三行） ---
+scene.render.film_transparent = True
+scene.render.image_settings.file_format = 'PNG'
+scene.render.image_settings.color_mode = 'RGBA'
+# ---------------------------
+
 # 相机设置：复用同名相机或创建
 cam_name = "FlatCam"
 cam_obj = scene.objects.get(cam_name)
