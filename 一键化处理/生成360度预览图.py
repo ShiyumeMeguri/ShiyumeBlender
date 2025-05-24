@@ -32,11 +32,10 @@ scene.display.shading.color_type = 'TEXTURE'
 scene.display.shading.use_scene_lights = False
 scene.display.shading.use_scene_world = False
 
-# --- 透明输出（新增三行） ---
+# 透明输出
 scene.render.film_transparent = True
 scene.render.image_settings.file_format = 'PNG'
 scene.render.image_settings.color_mode = 'RGBA'
-# ---------------------------
 
 # 相机设置：复用同名相机或创建
 cam_name = "FlatCam"
@@ -57,8 +56,9 @@ if enable_ortho:
 if enable_persp:
     modes.append('PERSP')
 
-# 找到场景所有根对象并逐个渲染
-roots = [o for o in scene.objects if o.parent is None]
+# 找到场景所有根对象（排除相机）并逐个渲染
+roots = [o for o in scene.objects if o.parent is None and o.type != 'CAMERA']
+
 for arm in roots:
     # 隐藏所有物体，仅显示当前根对象及其子网格
     for o in scene.objects:
