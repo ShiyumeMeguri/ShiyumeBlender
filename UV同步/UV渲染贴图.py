@@ -6,12 +6,12 @@ def ModifyMesh(obj):
     duplicate_name = f"{obj.name}_duplicate"
     if bpy.data.objects.get(duplicate_name):
         print(f"Duplicate for {obj.name} already exists.")
-        return
+        return bpy.data.objects.get(duplicate_name)
 
     # Duplicate the mesh
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj  # Ensure the object is active
+    bpy.context.view_layer.objects.active = obj
     bpy.ops.object.duplicate()
 
     # Retrieve the newly duplicated object
@@ -22,7 +22,7 @@ def ModifyMesh(obj):
     bpy.ops.transform.translate(value=(0, 0, -0.1))
     
     # Enter edit mode to merge vertices
-    bpy.context.view_layer.objects.active = duplicate_obj  # Make the duplicate active
+    bpy.context.view_layer.objects.active = duplicate_obj
     bpy.ops.object.mode_set(mode='EDIT')
     
     # Select all vertices and remove doubles
@@ -38,9 +38,11 @@ def ModifyMesh(obj):
     solidify2.thickness = 0.002
     solidify2.offset = 1
 
+    return duplicate_obj
+
 
 def SetupCameraAndRenderSettings(resolution):
-    # Record original settings
+    # This function is correct and does not need changes
     original_camera = bpy.context.scene.camera
     original_engine = bpy.context.scene.render.engine
     original_dither = bpy.context.scene.render.dither_intensity
@@ -50,7 +52,6 @@ def SetupCameraAndRenderSettings(resolution):
     original_res_y = bpy.context.scene.render.resolution_y
     original_transparent = bpy.context.scene.render.film_transparent
 
-    # Ensure there's a camera, create if necessary
     camera = bpy.data.objects.get('UV_Camera')
     if not camera:
         camera_data = bpy.data.cameras.new(name='UV_Camera')
@@ -63,13 +64,11 @@ def SetupCameraAndRenderSettings(resolution):
     camera.rotation_euler = (0, 0, 0)
     bpy.context.scene.camera = camera
 
-    # Set render engine to Workbench and adjust settings
     bpy.context.scene.render.engine = 'BLENDER_WORKBENCH'
     bpy.context.scene.render.dither_intensity = 0
     bpy.context.scene.display.shading.light = 'FLAT'
     bpy.context.scene.display.shading.color_type = 'TEXTURE'
 
-    # Set resolution and transparency
     bpy.context.scene.render.resolution_x = resolution
     bpy.context.scene.render.resolution_y = resolution
     bpy.context.scene.render.film_transparent = True
@@ -87,6 +86,7 @@ def SetupCameraAndRenderSettings(resolution):
 
 
 def RestoreOriginalSettings(settings):
+    # This function is correct and does not need changes
     bpy.context.scene.camera = settings['camera']
     bpy.context.scene.render.engine = settings['engine']
     bpy.context.scene.render.dither_intensity = settings['dither']
@@ -98,44 +98,74 @@ def RestoreOriginalSettings(settings):
 
 
 def RenderUVProjectionsToTexture(resolution=2048):
-    # Create directory for textures
     blend_path = bpy.data.filepath
+    if not blend_path:
+        print("请先保存 .blend 文件")
+        return
     tex_dir = os.path.join(os.path.dirname(blend_path), 'Textures')
     os.makedirs(tex_dir, exist_ok=True)
 
-    # Get UVSync collection
     uv_sync = bpy.data.collections.get('UVSync')
     if not uv_sync:
         print('UVSync collection does not exist.')
         return
 
-    # Setup camera and render settings
-    orig_settings = SetupCameraAndRenderSettings(resolution)
+    orig_settings = None
+    original_hide_states = {}
+    duplicates_to_delete = []
 
-    # Hide all objects, then show only UVSync meshes after duplication
-    for obj in bpy.data.objects:
-        obj.hide_render = True
+    try:
+        orig_settings = SetupCameraAndRenderSettings(resolution)
+        original_hide_states = {obj.name: obj.hide_render for obj in bpy.data.objects}
 
-    for obj in uv_sync.objects:
-        if obj.type == 'MESH':
-            ModifyMesh(obj)
-            obj.hide_render = False
+        for obj in bpy.data.objects:
+            obj.hide_render = True
 
-    # Render to texture, avoid overwriting same name
-    baseName = 'UVSync_Combined'
-    filename = f"{baseName}.png"
-    count = 1
-    while os.path.exists(os.path.join(tex_dir, filename)):
-        filename = f"{baseName}_{count}.png"
-        count += 1
-    output = os.path.join(tex_dir, filename)
+        for obj in uv_sync.objects:
+            if obj.type == 'MESH':
+                duplicate_obj = ModifyMesh(obj)
+                
+                if duplicate_obj:
+                    duplicates_to_delete.append(duplicate_obj)
+                    obj.hide_render = False
+                    duplicate_obj.hide_render = False
 
-    bpy.context.scene.render.filepath = output
-    bpy.ops.render.render(write_still=True)
-    print(f"Combined texture saved to '{output}'")
+        baseName = 'UVSync_Combined'
+        filename = f"{baseName}.png"
+        count = 1
+        while os.path.exists(os.path.join(tex_dir, filename)):
+            filename = f"{baseName}_{count}.png"
+            count += 1
+        output = os.path.join(tex_dir, filename)
 
-    # Restore original settings
-    RestoreOriginalSettings(orig_settings)
+        bpy.context.scene.render.filepath = output
+        bpy.ops.render.render(write_still=True)
+        print(f"Combined texture saved to '{output}'")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    finally:
+        print("Restoring original scene state...")
+        
+        if orig_settings:
+            RestoreOriginalSettings(orig_settings)
+
+        for obj_name, is_hidden in original_hide_states.items():
+            obj = bpy.data.objects.get(obj_name)
+            if obj:
+                obj.hide_render = is_hidden
+        
+        if duplicates_to_delete:
+            bpy.ops.object.select_all(action='DESELECT')
+            for obj in duplicates_to_delete:
+                # [修复] 检查对象的名字(string)是否存在，而不是对象本身(object)
+                if obj and obj.name in bpy.data.objects:
+                    obj.select_set(True)
+            if bpy.context.selected_objects:
+                bpy.ops.object.delete()
+
+        print("Restore complete.")
 
 # Execute
 RenderUVProjectionsToTexture()
