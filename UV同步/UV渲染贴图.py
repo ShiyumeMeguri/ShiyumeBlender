@@ -1,28 +1,45 @@
 import bpy
 import os
 
-def ModifyMesh(obj):
-    # Check if a duplicate already exists
-    duplicate_name = f"{obj.name}_duplicate"
-    if bpy.data.objects.get(duplicate_name):
-        print(f"Duplicate for {obj.name} already exists.")
-        return bpy.data.objects.get(duplicate_name)
-
-    # Duplicate the mesh
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.duplicate()
-
-    # Retrieve the newly duplicated object
-    duplicate_obj = bpy.context.active_object
-    duplicate_obj.name = duplicate_name
+def ModifyAndJoinMeshes(objects_to_process, resolution):
+    """
+    This function takes a list of objects, duplicates them,
+    joins the duplicates, and then applies modifications.
+    This is much more efficient than processing one by one.
+    """
+    duplicates = []
     
+    # [优化] 1. 先复制所有对象，避免在循环中使用 bpy.ops
+    for obj in objects_to_process:
+        if obj.type == 'MESH':
+            # 创建对象和数据的副本
+            new_obj = obj.copy()
+            new_obj.data = obj.data.copy()
+            new_obj.name = f"{obj.name}_duplicate"
+            bpy.context.collection.objects.link(new_obj)
+            duplicates.append(new_obj)
+
+    if not duplicates:
+        return None
+
+    # [优化] 2. 将所有副本合并成一个对象
+    bpy.ops.object.select_all(action='DESELECT')
+    
+    # 选中所有副本，并设置一个为活动对象以进行合并
+    for obj in duplicates:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = duplicates[0]
+    
+    bpy.ops.object.join()
+    
+    # join() 操作后，活动对象就是合并后的新对象
+    combined_obj = bpy.context.active_object
+    
+    # [优化] 3. 对合并后的单个对象执行一次修改
     # Move the duplicate 0.1m downwards
-    bpy.ops.transform.translate(value=(0, 0, -0.1))
+    combined_obj.location.z -= 0.1
     
     # Enter edit mode to merge vertices
-    bpy.context.view_layer.objects.active = duplicate_obj
     bpy.ops.object.mode_set(mode='EDIT')
     
     # Select all vertices and remove doubles
@@ -33,12 +50,12 @@ def ModifyMesh(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
     
     # Add Solidify modifiers
-    solidify1 = duplicate_obj.modifiers.new(name="SOLIDIFY_1", type='SOLIDIFY')
-    solidify2 = duplicate_obj.modifiers.new(name="SOLIDIFY_2", type='SOLIDIFY')
+    solidify1 = combined_obj.modifiers.new(name="SOLIDIFY_1", type='SOLIDIFY')
+    solidify2 = combined_obj.modifiers.new(name="SOLIDIFY_2", type='SOLIDIFY')
     solidify2.thickness = 0.002
     solidify2.offset = 1
 
-    return duplicate_obj
+    return combined_obj
 
 
 def SetupCameraAndRenderSettings(resolution):
@@ -105,42 +122,48 @@ def RenderUVProjectionsToTexture(resolution=2048):
     tex_dir = os.path.join(os.path.dirname(blend_path), 'Textures')
     os.makedirs(tex_dir, exist_ok=True)
 
-    uv_sync = bpy.data.collections.get('UVSync')
-    if not uv_sync:
+    uv_sync_collection = bpy.data.collections.get('UVSync')
+    if not uv_sync_collection:
         print('UVSync collection does not exist.')
         return
 
     orig_settings = None
     original_hide_states = {}
-    duplicates_to_delete = []
+    object_to_delete = None
 
     try:
         orig_settings = SetupCameraAndRenderSettings(resolution)
         original_hide_states = {obj.name: obj.hide_render for obj in bpy.data.objects}
 
+        # Hide all objects for rendering initially
         for obj in bpy.data.objects:
             obj.hide_render = True
+            
+        # Unhide original objects in the target collection
+        for obj in uv_sync_collection.objects:
+             obj.hide_render = False
 
-        for obj in uv_sync.objects:
-            if obj.type == 'MESH':
-                duplicate_obj = ModifyMesh(obj)
-                
-                if duplicate_obj:
-                    duplicates_to_delete.append(duplicate_obj)
-                    obj.hide_render = False
-                    duplicate_obj.hide_render = False
+        # [REWORKED LOGIC]
+        # Process all meshes from the collection at once
+        object_to_delete = ModifyAndJoinMeshes(list(uv_sync_collection.objects), resolution)
+        
+        if object_to_delete:
+            # Make the new combined object visible for render
+            object_to_delete.hide_render = False
 
-        baseName = 'UVSync_Combined'
-        filename = f"{baseName}.png"
-        count = 1
-        while os.path.exists(os.path.join(tex_dir, filename)):
-            filename = f"{baseName}_{count}.png"
-            count += 1
-        output = os.path.join(tex_dir, filename)
+            baseName = 'UVSync_Combined'
+            filename = f"{baseName}.png"
+            count = 1
+            while os.path.exists(os.path.join(tex_dir, filename)):
+                filename = f"{baseName}_{count}.png"
+                count += 1
+            output = os.path.join(tex_dir, filename)
 
-        bpy.context.scene.render.filepath = output
-        bpy.ops.render.render(write_still=True)
-        print(f"Combined texture saved to '{output}'")
+            bpy.context.scene.render.filepath = output
+            bpy.ops.render.render(write_still=True)
+            print(f"Combined texture saved to '{output}'")
+        else:
+            print("No suitable mesh objects found in 'UVSync' collection to process.")
 
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -156,14 +179,13 @@ def RenderUVProjectionsToTexture(resolution=2048):
             if obj:
                 obj.hide_render = is_hidden
         
-        if duplicates_to_delete:
-            bpy.ops.object.select_all(action='DESELECT')
-            for obj in duplicates_to_delete:
-                # [修复] 检查对象的名字(string)是否存在，而不是对象本身(object)
-                if obj and obj.name in bpy.data.objects:
-                    obj.select_set(True)
-            if bpy.context.selected_objects:
-                bpy.ops.object.delete()
+        # [CLEANUP] Delete the single combined object we created
+        if object_to_delete:
+            # Your original fix is good practice, we'll keep a similar check
+            if object_to_delete.name in bpy.data.objects:
+                bpy.ops.object.select_all(action='DESELECT')
+                object_to_delete.select_set(True)
+                bpy.ops.object.delete(use_global=False)
 
         print("Restore complete.")
 
