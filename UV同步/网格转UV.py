@@ -108,7 +108,7 @@ def create_uv_shape_key_mesh_robust():
 
     # 7. 创建并填充形态键
     sk_basis = new_obj.shape_key_add(name='Basis', from_mix=False)
-    sk_uv = new_obj.shape_key_add(name='UV_Projection', from_mix=False)
+    sk_uv = new_obj.shape_key_add(name='UVSync', from_mix=False)
 
     for i, vert in enumerate(new_obj.data.vertices):
         if i in uv_coords_map:
@@ -121,7 +121,7 @@ def create_uv_shape_key_mesh_robust():
     bpy.context.view_layer.objects.active = new_obj
     new_obj.select_set(True)
     source_obj.select_set(False)
-    new_obj.data.shape_keys.key_blocks['UV_Projection'].value = 1.0
+    new_obj.data.shape_keys.key_blocks['UVSync'].value = 1.0
     
     print(f"成功创建了带有UV形态键的对象 '{new_obj.name}'，已修正重叠UV问题。")
     return new_obj
