@@ -9,20 +9,23 @@ if obj and obj.type == 'CURVE':
         if spline.type != 'NURBS':
             spline.type = 'NURBS'
         
-        # 2. 【核心修复】开启端点 U，让曲线延伸到首尾顶点
+        # 2. 开启端点 U (解决截断问题)
         spline.use_endpoint_u = True 
         
         # 3. 设置平滑阶数
-        # 阶数越高越平滑，但如果点太少会报错，所以要做个判断
         target_order = 5
         if len(spline.points) >= target_order:
             spline.order_u = target_order
         else:
-            # 如果点不够5个，就按点的数量来设，防止消失
+            # 点数不足时适配点数
             spline.order_u = len(spline.points)
             
-    print(f"已处理: {obj.name}，NURBS 阶数已设为 5，且已开启端点吸附。")
-    # 强制更新视图
-    obj.data.update()
+    print(f"已处理: {obj.name}，NURBS 阶数: 5，端点吸附: 开启。")
+    
+    # 【修复部分】
+    # 曲线数据没有 update() 方法，通常修改属性后会自动更新。
+    # 如果视图没有刷新，我们标记该对象需要更新：
+    obj.update_tag()
+    
 else:
     print("选中的不是曲线对象！")
