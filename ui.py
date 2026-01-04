@@ -1,0 +1,168 @@
+import bpy
+
+def draw_menu(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.menu("SHIYUME_MT_Main", text="Shiyume Tools", icon='MODIFIER')
+
+class SHIYUME_MT_Main(bpy.types.Menu):
+    bl_label = "Shiyume Tools"
+    bl_idname = "SHIYUME_MT_Main"
+
+    def draw(self, context):
+        layout = self.layout
+        mode = context.mode
+        
+        if mode == 'POSE':
+            layout.label(text="Animation Tools")
+            layout.operator("shiyume.animation_offset", icon='ACTION')
+            layout.operator("shiyume.cleanup_bone_loc_scale", icon='TRASH')
+            layout.operator("shiyume.fix_invalid_anim_paths", icon='ERROR')
+            layout.operator("shiyume.clean_bone_collections", icon='FILTER')
+            layout.operator("shiyume.cleanup_bake_frames", icon='ANIM')
+        
+        elif mode == 'OBJECT':
+            layout.label(text="Selection & Layout")
+            layout.operator("shiyume.aabb_select", icon='RESTRICT_SELECT_OFF')
+            layout.operator("shiyume.grid_sort", icon='GRID')
+            layout.operator("shiyume.mat_link_object", icon='LINKED')
+            layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
+            layout.operator("shiyume.batch_rename", icon='SORTALPHA')
+            
+            layout.separator()
+            layout.label(text="Rendering & Misc")
+            layout.operator("shiyume.render_viewport_texture", icon='TEXTURE')
+            layout.operator("shiyume.batch_bake_textures", icon='RENDER_STILL')
+            layout.operator("shiyume.preview_360", icon='SCENE_DATA')
+            layout.operator("shiyume.modular_export", icon='EXPORT')
+            layout.operator("shiyume.fractal_fish", icon='MESH_DATA')
+
+        elif mode in {'EDIT_MESH', 'EDIT'}:
+            layout.label(text="Mesh Tools")
+            layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
+            layout.operator("shiyume.cleanup_vgs", icon='GROUP_VERTEX')
+            layout.operator("shiyume.weight_prune", icon='WPAINT_HLT')
+            layout.operator("shiyume.normal_expansion", icon='MOD_NORMALEDIT')
+            layout.operator("shiyume.outline", icon='MOD_SOLIDIFY')
+            layout.operator("shiyume.vertex_color_rgba", icon='VPAINT_HLT')
+        
+        elif mode == 'EDIT_CURVE':
+            layout.label(text="Curve Tools")
+            layout.operator("shiyume.curve_smooth_fix", icon='CURVE_DATA')
+            layout.operator("shiyume.curve_to_mesh", icon='MESH_DATA')
+            layout.operator("shiyume.mesh_to_curve", icon='CURVE_PATH')
+        
+        else:
+            # Fallback for other modes
+            layout.label(text="General Tools")
+            layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
+            layout.operator("shiyume.batch_rename", icon='SORTALPHA')
+            layout.operator("shiyume.outline", icon='MOD_SOLIDIFY')
+            layout.operator("shiyume.render_viewport_texture", icon='TEXTURE')
+        
+        # UV Editor menu is handled separately in IMAGE_MT_uv_context_menu
+
+class SHIYUME_MT_UV(bpy.types.Menu):
+    bl_label = "Shiyume UV Tools"
+    bl_idname = "SHIYUME_MT_UV"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.uv_pack_lock_group", icon='PACKAGE')
+        layout.operator("shiyume.uv_render_texture", icon='RENDER_STILL')
+        layout.operator("shiyume.mesh_uv_sync", icon='UV_DATA')
+        layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
+
+def menu_func(self, context):
+    self.layout.menu("SHIYUME_MT_Main")
+
+def menu_func_uv(self, context):
+    self.layout.separator()
+    self.layout.menu("SHIYUME_MT_UV", icon='MODIFIER')
+
+class SHIYUME_PT_Sidebar(bpy.types.Panel):
+    """Sidebar panel for Shiyume Tools"""
+    bl_label = "Shiyume Tools"
+    bl_idname = "SHIYUME_PT_Sidebar"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+
+    def draw(self, context):
+        layout = self.layout
+        # Reuse the menu draw logic
+        SHIYUME_MT_Main.draw(self, context)
+
+def draw_header(self, context):
+    layout = self.layout
+    layout.menu("SHIYUME_MT_Main", text="Shiyume", icon='MODIFIER')
+
+def register():
+    bpy.utils.register_class(SHIYUME_MT_Main)
+    bpy.utils.register_class(SHIYUME_MT_UV)
+    bpy.utils.register_class(SHIYUME_PT_Sidebar)
+    
+    # Target all possible specials/context menus with prepend like LoopTools
+    targets = [
+        "VIEW3D_MT_object_context_menu",
+        "VIEW3D_MT_edit_mesh_context_menu",
+        "VIEW3D_MT_edit_mesh_specials",
+        "VIEW3D_MT_pose_context_menu",
+        "VIEW3D_MT_pose_specials",
+        "VIEW3D_MT_edit_curve_context_menu",
+        "VIEW3D_MT_edit_curve_specials",
+        "VIEW3D_MT_armature_context_menu",
+        "VIEW3D_MT_armature_specials",
+    ]
+    
+    for t in targets:
+        if hasattr(bpy.types, t):
+            getattr(bpy.types, t).prepend(menu_func)
+    
+    # UV Editor menus
+    uv_targets = [
+        "IMAGE_MT_uv_context_menu",
+        "IMAGE_MT_uvs_context_menu",
+        "IMAGE_MT_uv_specials",
+    ]
+    
+    for t in uv_targets:
+        if hasattr(bpy.types, t):
+            getattr(bpy.types, t).prepend(menu_func_uv)
+
+    # Sidebar and Header
+    bpy.types.VIEW3D_HT_header.append(draw_header)
+
+def unregister():
+    targets = [
+        "VIEW3D_MT_object_context_menu",
+        "VIEW3D_MT_edit_mesh_context_menu",
+        "VIEW3D_MT_edit_mesh_specials",
+        "VIEW3D_MT_pose_context_menu",
+        "VIEW3D_MT_pose_specials",
+        "VIEW3D_MT_edit_curve_context_menu",
+        "VIEW3D_MT_edit_curve_specials",
+        "VIEW3D_MT_armature_context_menu",
+        "VIEW3D_MT_armature_specials",
+    ]
+    for t in targets:
+        if hasattr(bpy.types, t):
+            try: getattr(bpy.types, t).remove(menu_func)
+            except: pass
+
+    uv_targets = [
+        "IMAGE_MT_uv_context_menu",
+        "IMAGE_MT_uvs_context_menu",
+        "IMAGE_MT_uv_specials",
+    ]
+    for t in uv_targets:
+        if hasattr(bpy.types, t):
+            try: getattr(bpy.types, t).remove(menu_func_uv)
+            except: pass
+
+    try: bpy.types.VIEW3D_HT_header.remove(draw_header)
+    except: pass
+
+    bpy.utils.unregister_class(SHIYUME_MT_Main)
+    bpy.utils.unregister_class(SHIYUME_MT_UV)
+    bpy.utils.unregister_class(SHIYUME_PT_Sidebar)
