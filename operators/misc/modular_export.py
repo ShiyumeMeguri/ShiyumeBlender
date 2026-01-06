@@ -4,6 +4,21 @@ import json
 import math
 import mathutils
 
+def to_json_compatible(value):
+    """Recursively convert Blender types to JSON-compatible Python types."""
+    import idprop
+    if isinstance(value, (int, float, str, bool, type(None))):
+        return value
+    if hasattr(value, "to_list"): # mathutils types (Vector, Color, etc.)
+        return value.to_list()
+    if isinstance(value, (list, tuple)):
+        return [to_json_compatible(v) for v in value]
+    if isinstance(value, (idprop.types.IDPropertyGroup, dict)):
+        return {k: to_json_compatible(value[k]) for k in value.keys()}
+    if hasattr(value, "__iter__"):
+        return [to_json_compatible(v) for v in value]
+    return str(value) # Fallback for unknown types
+
 class SHIYUME_OT_ModularExport(bpy.types.Operator):
     """Export scene as modular FBX parts and a RuriScene JSON map.
     Exports each unique mesh once to 'Models/[CollectionName]/'
@@ -23,19 +38,7 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             return {'CANCELLED'}
 
         # Calculate base output folder
-        # e.g. D:\...\Area\Aojakushi\MyFile\
         file_name = os.path.splitext(os.path.basename(blend_path))[0]
-        
-        # If user explicitly set a path in a file browser workflow (not implemented in UI yet but good practice), use it.
-        # Otherwise default to: [Expected Asset Path]/[FileName]/
-        # We will follow the user's specific request structure: 
-        # "D:\Ruri\02.Unity\Project\FractalProject\Assets\RuriAssets\Art\Stage\Area\Aojakushi\{file_name}\Models"
-        # However, hardcoding the exact path is brittle. Let's assume we export RELATIVE to the blend file if it's in the project.
-        # IF the blend file is external (User said "D:\Ruri\00.Model\NoSync\ShiyumeBlender" symlinked?), 
-        # wait, the blend file is likely in the Art source folder.
-        # User script example: output_folder = fr"D:\...\Aojakushi\{file_name}\Models"
-        
-        # We'll use the blend file's directory as the base.
         base_dir = os.path.dirname(blend_path)
         export_root = os.path.join(base_dir, "Models")
         
@@ -45,11 +48,7 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
         self.report({'INFO'}, f"Exporting to {export_root}")
         
         # Data structures
-        # unique_mesh_map: { mesh_data: { 'path': "Relative/Path.fbx", 'name': "MeshName" } }
         unique_mesh_map = {}
-        
-        # To avoid name collisions like "Cube" in Entity and "Cube" in Scene, we prefer unique names or just use Mesh Name directly.
-        # We will use the Mesh Data Name as the filename source.
         
         # Collections to process
         target_collections = ["Entity", "Scene"]
@@ -73,9 +72,6 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
                     valid_objects.append((obj, col))
 
         # 1. Export Unique Meshes
-        # We need to ensure we don't modify the scene permanently.
-        # We will store original transforms, zero them, export, restore.
-        
         # For safety, deselect all first
         bpy.ops.object.select_all(action='DESELECT')
         
@@ -93,37 +89,14 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             mesh_data = obj.data
             
             # Use mesh name for deduplication
-            # If multiple objects share mesh 'Cube.001', we only export it once as 'Cube.001.fbx'
-            
             if mesh_data not in unique_mesh_map:
-                # Need to export this mesh
-                # We use the CURRENT object as the exporter delegate
                 # 1. Save state
-                orig_loc = obj.location.copy()
-                orig_rot = obj.rotation_euler.copy()
-                orig_mode = obj.rotation_mode
-                orig_scale = obj.scale.copy()
-                orig_parent = obj.parent
+                saved_matrix = obj.matrix_world.copy()
                 
                 # 2. Reset Transform
-                # We want the mesh to be at 0,0,0 in the FBX so Unity pivot is correct.
-                # Unlink parent temporarily to ensure world origin is true origin
-                if orig_parent:
-                    # Storing matrix_world and restoring it is safer than unparenting?
-                    # No, unparenting with matrix_world kept is best, then zero out.
-                    # But assumes keep transform. 
-                    # Simplest: Just set matrix_world to Identity.
-                    pass
-                 
-                # We'll use matrix_world setting directly
-                saved_matrix = obj.matrix_world.copy()
                 obj.matrix_world = mathutils.Matrix.Identity(4)
                 
                 # 3. Export
-                # Destination: Models/[Category]/[MeshName].fbx
-                # Note: We use the Object's category for the Mesh. 
-                # If a Mesh is shared across categories, the first one wins.
-                
                 sub_folder = os.path.join(export_root, col_category)
                 if not os.path.exists(sub_folder):
                     os.makedirs(sub_folder)
@@ -140,9 +113,9 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
                     filepath=full_fbx_path,
                     use_selection=True,
                     global_scale=1.0,
-                    apply_scale_options='FBX_SCALE_ALL', # Crucial for clean scale
+                    apply_scale_options='FBX_SCALE_ALL',
                     object_types={'MESH'},
-                    use_mesh_modifiers=True, # Apply modifiers
+                    use_mesh_modifiers=True,
                     mesh_smooth_type='OFF',
                     use_custom_props=True,
                     bake_anim=False,
@@ -176,13 +149,13 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             
             scene_json_items.append({
                 "name": obj.name,
-                "type": col_category, # Entity or Scene
+                "type": col_category,
                 "mesh_source_path": export_info['path'],
-                "mesh_sub_asset": export_info['mesh_name'], # This might need refinement if FBX export changes name
+                "mesh_sub_asset": export_info['mesh_name'],
                 "position": u_pos,
                 "rotation": u_rot,
                 "scale": u_scale,
-                "properties": {k: v for k, v in obj.items() if not k.startswith('_')}
+                "properties": {k: to_json_compatible(obj[k]) for k in obj.keys() if not k.startswith('_')}
             })
 
         # Generate JSON
