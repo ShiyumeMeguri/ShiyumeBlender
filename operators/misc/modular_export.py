@@ -48,22 +48,26 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             except Exception as e:
                 print(f"Registry lookup failed: {e}")
 
-        # Fallback if not set in current process but we know what it should be, or just error
-        # For user experience, we can try to look at the path. 
-        # But user explicitly asked for Env Var dependency.
         if not fractal_path:
              self.report({'ERROR'}, "Environment variable 'FractalPath' is not set.")
              return {'CANCELLED'}
              
         file_name = os.path.splitext(os.path.basename(blend_path))[0]
         
-        # New Output Path: %FractalPath%\Assets\RuriAssets\Art\Stage\[SceneName]
-        export_root = os.path.join(fractal_path, "Assets", "RuriAssets", "Art", "Stage", file_name)
+        # Paths
+        # Models: %FractalPath%\Assets\RuriAssets\Art\Stage\[SceneName]\Models
+        model_root = os.path.join(fractal_path, "Assets", "RuriAssets", "Art", "Stage", file_name, "Models")
         
-        if not os.path.exists(export_root):
-            os.makedirs(export_root)
+        # Scene Data: %FractalPath%\Assets\RuriAssets\Art\Scene\[SceneName]
+        scene_root = os.path.join(fractal_path, "Assets", "RuriAssets", "Art", "Scene", file_name)
+        
+        if not os.path.exists(model_root):
+            os.makedirs(model_root)
+        if not os.path.exists(scene_root):
+            os.makedirs(scene_root)
 
-        self.report({'INFO'}, f"Exporting to {export_root}")
+        self.report({'INFO'}, f"Exporting Models to {model_root}")
+        self.report({'INFO'}, f"Exporting Scene to {scene_root}")
         
         # Data structures
         unique_mesh_map = {}
@@ -103,11 +107,42 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             rel = os.path.relpath(p, fractal_path)
             return rel.replace("\\", "/")
 
+        # Helper to strip .001 suffix
+        def get_base_name(name):
+            # Check for .### pattern
+            if len(name) > 4 and name[-4] == '.' and name[-3:].isdigit():
+                return name[:-4]
+            return name
+
+        # Sort objects to ensure we process base names before suffixes if possible (optional but helpful)
+        # Simply processing them in order is fine, but we need to track what we've exported by NAME, not just by data pointer.
+        
+        # New Map: BaseName -> { path, mesh_name }
+        exported_base_names_map = {}
+        
         for obj, col_category in valid_objects:
             mesh_data = obj.data
             
-            # Use mesh name for deduplication
-            if mesh_data not in unique_mesh_map:
+            # Smart Deduplication Strategy:
+            # 1. Check if mesh_data is already mapped (Exact same data block).
+            # 2. Check if mesh_data.name has a suffix (e.g. "Poster.001") AND the base name ("Poster") was already exported.
+            
+            base_name = get_base_name(mesh_data.name)
+            
+            # Check strict data identity first
+            if mesh_data in unique_mesh_map:
+                export_info = unique_mesh_map[mesh_data]
+            
+            # Check name-based identity (User requirement: treat .001 as duplicated link)
+            elif base_name in exported_base_names_map:
+                # Reuse the base export
+                export_info = exported_base_names_map[base_name]
+                # Map this mesh_data to the existing info so future lookups are fast
+                unique_mesh_map[mesh_data] = export_info
+            
+            else:
+                # Must export new
+                
                 # 1. Save state
                 saved_matrix = obj.matrix_world.copy()
                 
@@ -115,11 +150,17 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
                 obj.matrix_world = mathutils.Matrix.Identity(4)
                 
                 # 3. Export
-                sub_folder = os.path.join(export_root, col_category)
+                # sub_folder = os.path.join(model_root, col_category) <-- REMOVED SUBFOLDER
+                sub_folder = model_root # Flattened structure
                 if not os.path.exists(sub_folder):
                     os.makedirs(sub_folder)
                     
                 # Clean mesh name
+                # If this is "Poster.001" and we haven't seen "Poster", we might want to export it AS "Poster.001" 
+                # OR user implies that "Poster" exists elsewhere? 
+                # Assuming if we are here, we are the 'first' instance of this 'type'. 
+                # Let's use the object's mesh name as the filename.
+                
                 safe_name = mesh_data.name.replace(".", "_").replace(":", "_")
                 fbx_filename = f"{safe_name}.fbx"
                 full_fbx_path = os.path.join(sub_folder, fbx_filename)
@@ -147,19 +188,28 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
                 obj.matrix_world = saved_matrix
                 
                 # 5. Record
-                unique_mesh_map[mesh_data] = {
+                export_info = {
                     'path': get_unity_rel_path(full_fbx_path),
                     'mesh_name': obj.name # Unity often imports the mesh using the Object name if single object
                 }
+                
+                unique_mesh_map[mesh_data] = export_info
+                exported_base_names_map[base_name] = export_info
             
             # Prepare JSON data for this instance
-            export_info = unique_mesh_map[mesh_data]
+            # export_info is set above
             
             # Coordinate Conversion to Unity
             mat = obj.matrix_world
             loc = mat.to_translation()
             rot = mat.to_quaternion()
             scale = mat.to_scale()
+            
+            # Version 2: Try -90 on X or other combinations.
+            # "Upside down" (180 error) implies my previous +90 was wrong direction or added to an existing 90.
+            # Standard Unity mapping from Blender: X-90.
+            q_correction = mathutils.Euler((math.radians(-90), 0, 0)).to_quaternion()
+            rot = rot @ q_correction 
             
             u_pos = {"x": -loc.x, "y": loc.z, "z": loc.y}
             u_rot = {"x": -rot.x, "y": rot.z, "z": rot.y, "w": -rot.w}
@@ -183,7 +233,7 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             "items": scene_json_items
         }
         
-        json_path = os.path.join(export_root, f"{file_name}.ruriscene")
+        json_path = os.path.join(scene_root, f"{file_name}.ruriscene")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(scene_data, f, indent=4)
             
