@@ -37,10 +37,28 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             self.report({'ERROR'}, "Save blend file first")
             return {'CANCELLED'}
 
-        # Calculate base output folder
+        # Get Env Var with Registry Fallback for Windows
+        fractal_path = os.environ.get("FractalPath")
+        
+        if not fractal_path and os.name == 'nt':
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                    fractal_path, _ = winreg.QueryValueEx(key, "FractalPath")
+            except Exception as e:
+                print(f"Registry lookup failed: {e}")
+
+        # Fallback if not set in current process but we know what it should be, or just error
+        # For user experience, we can try to look at the path. 
+        # But user explicitly asked for Env Var dependency.
+        if not fractal_path:
+             self.report({'ERROR'}, "Environment variable 'FractalPath' is not set.")
+             return {'CANCELLED'}
+             
         file_name = os.path.splitext(os.path.basename(blend_path))[0]
-        base_dir = os.path.dirname(blend_path)
-        export_root = os.path.join(base_dir, "Models")
+        
+        # New Output Path: %FractalPath%\Assets\RuriAssets\Art\Stage\[SceneName]
+        export_root = os.path.join(fractal_path, "Assets", "RuriAssets", "Art", "Stage", file_name)
         
         if not os.path.exists(export_root):
             os.makedirs(export_root)
@@ -79,11 +97,11 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
         
         # Helper for unity path
         def get_unity_rel_path(p):
-            p = os.path.normpath(p)
-            parts = p.split(os.sep)
-            if "Assets" in parts:
-                return "/".join(parts[parts.index("Assets"):])
-            return os.path.basename(p)
+            # We want path starting with "Assets/"
+            # Since we construct export_root using fractal_path + Assets..., 
+            # we can just take relative path from fractal_path
+            rel = os.path.relpath(p, fractal_path)
+            return rel.replace("\\", "/")
 
         for obj, col_category in valid_objects:
             mesh_data = obj.data
@@ -165,7 +183,7 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             "items": scene_json_items
         }
         
-        json_path = os.path.join(base_dir, f"{file_name}.ruriscene")
+        json_path = os.path.join(export_root, f"{file_name}.ruriscene")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(scene_data, f, indent=4)
             
