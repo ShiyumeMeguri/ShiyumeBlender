@@ -107,67 +107,131 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
             rel = os.path.relpath(p, fractal_path)
             return rel.replace("\\", "/")
 
-        # Helper to strip .001 suffix
-        def get_base_name(name):
-            # Check for .### pattern
-            if len(name) > 4 and name[-4] == '.' and name[-3:].isdigit():
-                return name[:-4]
-            return name
+        # Helper: Generate Modifier Checksum/Signature
+        def get_modifier_signature(obj):
+            mods = [m for m in obj.modifiers if m.show_render]
+            if not mods:
+                return "NOMOD"
+            
+            sig_parts = []
+            for m in mods:
+                props = ""
+                if m.type == 'ARRAY':
+                    props = f"{m.count}_{m.fit_type}_{m.constant_offset_displace}_{m.relative_offset_displace}"
+                elif m.type == 'MIRROR':
+                    props = f"{m.use_axis}_{m.use_bisect_axis}_{m.use_mirror_merge}"
+                elif m.type == 'BEVEL':
+                    props = f"{m.width}_{m.segments}_{m.profile}_{m.limit_method}"
+                elif m.type == 'SOLIDIFY':
+                    props = f"{m.thickness}_{m.offset}"
+                elif m.type == 'SUBSURF':
+                    props = f"{m.levels}_{m.render_levels}"
+                else:
+                    props = m.name 
+                sig_parts.append(f"{m.type}:{props}")
+            return "_".join(sig_parts)
 
-        # Sort objects to ensure we process base names before suffixes if possible (optional but helpful)
-        # Simply processing them in order is fine, but we need to track what we've exported by NAME, not just by data pointer.
+        # Helper: Calculate Rotation Matrix from Mesh A to Mesh B
+        def calc_mesh_rotation_diff(mesh_base, mesh_var):
+            if len(mesh_base.vertices) != len(mesh_var.vertices): return None
+            if len(mesh_base.vertices) < 3: return mathutils.Matrix.Identity(4)
+            
+            # Use First 3 Vertices for Basis
+            vA1, vA2, vA3 = mesh_base.vertices[0].co, mesh_base.vertices[1].co, mesh_base.vertices[2].co
+            vB1, vB2, vB3 = mesh_var.vertices[0].co, mesh_var.vertices[1].co, mesh_var.vertices[2].co
+            
+            xA = (vA2 - vA1).normalized()
+            nA = (vA2 - vA1).cross(vA3 - vA1).normalized()
+            yA = xA.cross(nA).normalized()
+            zA = nA
+            matA = mathutils.Matrix((xA, yA, zA)).transposed()
+            
+            xB = (vB2 - vB1).normalized()
+            nB = (vB2 - vB1).cross(vB3 - vB1).normalized()
+            yB = xB.cross(nB).normalized()
+            zB = nB
+            matB = mathutils.Matrix((xB, yB, zB)).transposed()
+            
+            R = matB @ matA.inverted() 
+            return R.to_4x4()
+
+        # Helper: Verify if Rotation Matrix correctly maps Mesh A to Mesh B (Rigid check)
+        def verify_rotation_match(mesh_base, mesh_var, R, samples=10):
+            import random
+            count = len(mesh_base.vertices)
+            indices = list(range(count))
+            # deterministic sample for stability
+            sample_indices = indices if count <= samples else [indices[i*count//samples] for i in range(samples)]
+            
+            for i in sample_indices:
+                va = mesh_base.vertices[i].co
+                vb = mesh_var.vertices[i].co
+                va_transformed = R @ va
+                if (va_transformed - vb).length > 0.001: # Tolerance
+                    return False
+            return True
+
+        # NEW DEDUPLICATION MAP
+        # Key: (VertexCount, PolyCount, ModSignature) -> List of { 'path':..., 'mesh_name':..., 'ref_mesh':... }
+        # logic: 
+        # 1. Calc Key.
+        # 2. Iterate List. Check 'verify_rotation_match'.
+        # 3. If Match -> Reuse.
+        # 4. If No Match -> Export New & Apppend.
         
-        # New Map: BaseName -> { path, mesh_name }
-        exported_base_names_map = {}
+        geometry_map = {}
+        
+        scene_json_items = []
         
         for obj, col_category in valid_objects:
             mesh_data = obj.data
+            mod_sig = get_modifier_signature(obj)
             
-            # Smart Deduplication Strategy:
-            # 1. Check if mesh_data is already mapped (Exact same data block).
-            # 2. Check if mesh_data.name has a suffix (e.g. "Poster.001") AND the base name ("Poster") was already exported.
+            # Broad Phase Hash: Verts, Polys, Mods
+            geo_key = (len(mesh_data.vertices), len(mesh_data.polygons), mod_sig)
             
-            base_name = get_base_name(mesh_data.name)
+            export_path = ""
+            export_mesh_name = ""
+            instance_correction_matrix = mathutils.Matrix.Identity(4)
+            found_match = False
             
-            # Check strict data identity first
-            if mesh_data in unique_mesh_map:
-                export_info = unique_mesh_map[mesh_data]
-            
-            # Check name-based identity (User requirement: treat .001 as duplicated link)
-            elif base_name in exported_base_names_map:
-                # Reuse the base export
-                export_info = exported_base_names_map[base_name]
-                # Map this mesh_data to the existing info so future lookups are fast
-                unique_mesh_map[mesh_data] = export_info
-            
+            if geo_key in geometry_map:
+                # Potential Matches
+                candidates = geometry_map[geo_key]
+                for info in candidates:
+                    ref_mesh = info['ref_mesh']
+                    
+                    # 1. Check if same object data (fast path)
+                    if ref_mesh == mesh_data:
+                        export_path = info['path']
+                        export_mesh_name = info['mesh_name']
+                        found_match = True
+                        break
+                        
+                    # 2. Check Geometry match via Rotation
+                    R_diff = calc_mesh_rotation_diff(ref_mesh, mesh_data)
+                    if R_diff and verify_rotation_match(ref_mesh, mesh_data, R_diff):
+                        export_path = info['path']
+                        export_mesh_name = info['mesh_name']
+                        instance_correction_matrix = R_diff
+                        found_match = True
+                        break
             else:
-                # Must export new
-                
-                # 1. Save state
+                 geometry_map[geo_key] = []
+            
+            if not found_match:
+                # Export New
                 saved_matrix = obj.matrix_world.copy()
-                
-                # 2. Reset Transform
                 obj.matrix_world = mathutils.Matrix.Identity(4)
                 
-                # 3. Export
-                # sub_folder = os.path.join(model_root, col_category) <-- REMOVED SUBFOLDER
-                sub_folder = model_root # Flattened structure
-                if not os.path.exists(sub_folder):
-                    os.makedirs(sub_folder)
-                    
-                # Clean mesh name
-                # If this is "Poster.001" and we haven't seen "Poster", we might want to export it AS "Poster.001" 
-                # OR user implies that "Poster" exists elsewhere? 
-                # Assuming if we are here, we are the 'first' instance of this 'type'. 
-                # Let's use the object's mesh name as the filename.
+                sub_folder = model_root
+                if not os.path.exists(sub_folder): os.makedirs(sub_folder)
                 
-                safe_name = mesh_data.name.replace(".", "_").replace(":", "_")
+                safe_name = obj.name.replace(".", "_").replace(":", "_")
                 fbx_filename = f"{safe_name}.fbx"
                 full_fbx_path = os.path.join(sub_folder, fbx_filename)
                 
                 obj.select_set(True)
-                
-                # FBX Export
                 bpy.ops.export_scene.fbx(
                     filepath=full_fbx_path,
                     use_selection=True,
@@ -181,45 +245,52 @@ class SHIYUME_OT_ModularExport(bpy.types.Operator):
                     axis_forward='-Z',
                     axis_up='Y'
                 )
-                
                 obj.select_set(False)
-                
-                # 4. Restore
                 obj.matrix_world = saved_matrix
                 
-                # 5. Record
-                export_info = {
+                info = {
                     'path': get_unity_rel_path(full_fbx_path),
-                    'mesh_name': obj.name # Unity often imports the mesh using the Object name if single object
+                    'mesh_name': obj.name,
+                    'ref_mesh': mesh_data
                 }
+                geometry_map[geo_key].append(info)
                 
-                unique_mesh_map[mesh_data] = export_info
-                exported_base_names_map[base_name] = export_info
-            
-            # Prepare JSON data for this instance
-            # export_info is set above
-            
-            # Coordinate Conversion to Unity
+                export_path = info['path']
+                export_mesh_name = info['mesh_name']
+
+            # Final Matrix Calculation
             mat = obj.matrix_world
-            loc = mat.to_translation()
-            rot = mat.to_quaternion()
-            scale = mat.to_scale()
+            final_mat = mat @ instance_correction_matrix
+            loc = final_mat.to_translation()
+            rot = final_mat.to_quaternion()
+            scale = final_mat.to_scale()
             
-            # Version 2: Try -90 on X or other combinations.
-            # "Upside down" (180 error) implies my previous +90 was wrong direction or added to an existing 90.
-            # Standard Unity mapping from Blender: X-90.
+            # Standard Unity Correction (-90 X) relative to World
             q_correction = mathutils.Euler((math.radians(-90), 0, 0)).to_quaternion()
             rot = rot @ q_correction 
             
-            u_pos = {"x": -loc.x, "y": loc.z, "z": loc.y}
+            # User reported Z is inverted (-1.24 vs 1.24). 
+            # Previous: z = loc.y. New: z = -loc.y
+            u_pos = {"x": -loc.x, "y": loc.z, "z": -loc.y}
             u_rot = {"x": -rot.x, "y": rot.z, "z": rot.y, "w": -rot.w}
             u_scale = {"x": scale.x, "y": scale.z, "z": scale.y}
             
             scene_json_items.append({
                 "name": obj.name,
                 "type": col_category,
-                "mesh_source_path": export_info['path'],
-                "mesh_sub_asset": export_info['mesh_name'],
+                "mesh_source_path": export_path,
+                "mesh_sub_asset": export_mesh_name,
+                "position": u_pos,
+                "rotation": u_rot,
+                "scale": u_scale,
+                "properties": {k: to_json_compatible(obj[k]) for k in obj.keys() if not k.startswith('_')}
+            })
+            
+            scene_json_items.append({
+                "name": obj.name,
+                "type": col_category,
+                "mesh_source_path": export_path,
+                "mesh_sub_asset": export_mesh_name,
                 "position": u_pos,
                 "rotation": u_rot,
                 "scale": u_scale,
