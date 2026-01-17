@@ -25,6 +25,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.mat_link_object", icon='LINKED')
             layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE')
             layout.operator("shiyume.batch_rename", icon='SORTALPHA')
+            layout.operator("shiyume.clear_empty", icon='X')
             
             layout.separator()
             layout.label(text="渲染与杂项")
