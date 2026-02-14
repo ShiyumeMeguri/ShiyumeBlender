@@ -93,8 +93,6 @@ class SHIYUME_OT_MeshToUV(bpy.types.Operator):
                 sk_uv.data[i].co = sk_basis.data[i].co
 
         # 5. Finalize
-        new_obj.matrix_world = source_obj.matrix_world
-        new_obj.location.x += source_obj.dimensions.x * 1.2
         
         context.view_layer.objects.active = new_obj
         new_obj.select_set(True)
