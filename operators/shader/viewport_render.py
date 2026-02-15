@@ -1,62 +1,75 @@
 import bpy
 import os
 
-def ModifyAndJoinMeshes(objects_to_process, resolution):
+def PrepareMeshesForRender(objects_to_process, resolution):
     """
-    此函数与您提供的版本完全相同，以确保渲染逻辑等价。
-    它获取对象列表，复制它们，合并副本，然后应用修改。
+    此函数与您提供的版本类似的逻辑，但改为处理多个对象而不合并，以支持各自独立的 UV 贴图。
+    它获取对象列表，复制它们，然后批量应用修改。
     """
     duplicates = []
     
-    # [优化] 1. 先复制所有对象，避免在循环中使用 bpy.ops
+    # [优化] 1. 先复制所有对象
     for obj in objects_to_process:
         if obj.type == 'MESH':
             # 创建对象和数据的副本
             new_obj = obj.copy()
             new_obj.data = obj.data.copy()
             new_obj.name = f"{obj.name}_duplicate"
+            
+            # [修正] 确保使用被标记为"渲染激活"的 UV 贴图作为激活贴图
+            render_uv = None
+            for uv in new_obj.data.uv_layers:
+                if uv.active_render:
+                    render_uv = uv
+                    break
+            
+            if render_uv:
+                new_obj.data.uv_layers.active = render_uv
+            
             bpy.context.collection.objects.link(new_obj)
+            
+            # [修正] 如果有形态键，需要先应用它们，否则 remove_doubles 会出错或导致形状错乱
+            if new_obj.data.shape_keys:
+                # 只有当有形态键时才进行转换，避免不必要的开销
+                # 必须选中并设为活动才能转换
+                bpy.ops.object.select_all(action='DESELECT')
+                new_obj.select_set(True)
+                bpy.context.view_layer.objects.active = new_obj
+                # 转换为 Mesh 会应用所有修改器和形态键
+                bpy.ops.object.convert(target='MESH')
+            
             duplicates.append(new_obj)
 
     if not duplicates:
-        return None
+        return []
 
-    # [优化] 2. 将所有副本合并成一个对象
+    # [优化] 2. 选中所有副本进行批量编辑
     bpy.ops.object.select_all(action='DESELECT')
-    
-    # 选中所有副本，并设置一个为活动对象以进行合并
     for obj in duplicates:
         obj.select_set(True)
-    # 确保至少有一个副本以避免错误
-    if duplicates:
+    
+    # 设置一个活动对象以进行编辑模式切换
+    if duplicates: # Check if list is not empty
         bpy.context.view_layer.objects.active = duplicates[0]
     
-    bpy.ops.object.join()
-    
-    # join() 操作后，活动对象就是合并后的新对象
-    combined_obj = bpy.context.active_object
-    
-    # [优化] 3. 对合并后的单个对象执行一次修改
-    # 将副本向下移动0.1m
-    combined_obj.location.z -= 0.1
-    
-    # 进入编辑模式合并顶点
+    # 进入编辑模式合并顶点 (多对象编辑)
     bpy.ops.object.mode_set(mode='EDIT')
-    
-    # 全选顶点并移除重复点
     bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.mesh.remove_doubles()
-    
-    # 返回物体模式
     bpy.ops.object.mode_set(mode='OBJECT')
     
-    # 添加实体化修改器
-    solidify1 = combined_obj.modifiers.new(name="SOLIDIFY_1", type='SOLIDIFY')
-    solidify2 = combined_obj.modifiers.new(name="SOLIDIFY_2", type='SOLIDIFY')
-    solidify2.thickness = 0.002
-    solidify2.offset = 1
+    # [优化] 3. 对每个对象应用修改器和位移
+    for obj in duplicates:
+        # 将副本向下移动0.1m
+        obj.location.z -= 0.1
+        
+        # 添加实体化修改器
+        solidify1 = obj.modifiers.new(name="SOLIDIFY_1", type='SOLIDIFY')
+        solidify2 = obj.modifiers.new(name="SOLIDIFY_2", type='SOLIDIFY')
+        solidify2.thickness = 0.002
+        solidify2.offset = 1
 
-    return combined_obj
+    return duplicates
 
 
 def SetupCameraAndRenderSettings(resolution):
@@ -150,7 +163,7 @@ class SHIYUME_OT_RenderViewportAsTexture(bpy.types.Operator):
 
         orig_settings = None
         original_hide_states = {}
-        object_to_delete = None
+        objects_to_delete = []
 
         try:
             orig_settings = SetupCameraAndRenderSettings(resolution)
@@ -160,16 +173,13 @@ class SHIYUME_OT_RenderViewportAsTexture(bpy.types.Operator):
             for obj in bpy.data.objects:
                 obj.hide_render = True
                 
-            # [修改后逻辑] 仅取消隐藏选中的对象（虽然我们实际上是在处理副本，这里更多是为了保持状态一致性，或者如果 ModifyAndJoinMeshes 依赖可见性的话）
-            # ModifyAndJoinMeshes 实际上会处理副本，所以这里主要是为了保险起见，或者如果渲染时用到原始对象（现在的逻辑是用新合并的对象）
-            # 实际上，ModifyAndJoinMeshes 会创建新对象并 link 到集合，我们需要确保新对象可见
+            # [修正] 直接处理选中的对象，不再合并
+            objects_to_delete = PrepareMeshesForRender(selected_meshes, resolution)
             
-            # [修正] 直接处理选中的对象
-            object_to_delete = ModifyAndJoinMeshes(selected_meshes, resolution)
-            
-            if object_to_delete:
-                # [原始逻辑] 使新合并的对象在渲染中可见
-                object_to_delete.hide_render = False
+            if objects_to_delete:
+                # [修正] 使新创建的所有对象在渲染中可见
+                for obj in objects_to_delete:
+                    obj.hide_render = False
 
                 # 使用活动对象名称或者通用名称作为基础文件名
                 active_obj = context.active_object
@@ -205,14 +215,15 @@ class SHIYUME_OT_RenderViewportAsTexture(bpy.types.Operator):
                 if obj:
                     obj.hide_render = is_hidden
             
-            # [原始逻辑] 清理我们创建的单个合并对象
-            if object_to_delete:
-                if object_to_delete.name in bpy.data.objects:
-                    bpy.ops.object.select_all(action='DESELECT')
-                    object_to_delete.select_set(True)
-                    bpy.ops.object.delete(use_global=False)
+            # [修正] 清理所有创建的临时对象
+            if objects_to_delete:
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in objects_to_delete:
+                    if obj.name in bpy.data.objects:
+                        obj.select_set(True)
+                bpy.ops.object.delete(use_global=False)
             
-            # 恢复之前的选择状态 (可选，但通常是一个好的做法)
+            # 恢复之前的选择状态
             bpy.ops.object.select_all(action='DESELECT')
             for obj in selected_meshes:
                 try:

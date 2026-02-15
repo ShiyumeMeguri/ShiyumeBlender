@@ -10,15 +10,10 @@ class SHIYUME_OT_MeshToUV(bpy.types.Operator):
     bl_label = "网格转UV (物理展开)"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
-        source_obj = context.active_object
-        if source_obj is None or source_obj.type != 'MESH':
-            self.report({'ERROR'}, "Select a mesh object")
-            return {'CANCELLED'}
-
+    def process_object(self, context, source_obj):
         if not source_obj.data.uv_layers.active:
-            self.report({'ERROR'}, "No active UV layer")
-            return {'CANCELLED'}
+            self.report({'WARNING'}, f"Object '{source_obj.name}' has no active UV layer, skipping.")
+            return None
 
         # 1. Bmesh processing to split UV islands
         bm = bmesh.new()
@@ -94,10 +89,33 @@ class SHIYUME_OT_MeshToUV(bpy.types.Operator):
 
         # 5. Finalize
         
-        context.view_layer.objects.active = new_obj
-        new_obj.select_set(True)
-        source_obj.select_set(False)
         sk_uv.value = 1.0
+        return new_obj
 
-        self.report({'INFO'}, f"Created robust UV Mesh: {new_obj.name}")
+    def execute(self, context):
+        selected_meshes = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        
+        if not selected_meshes:
+            self.report({'ERROR'}, "Select at least one mesh object")
+            return {'CANCELLED'}
+
+        created_objects = []
+
+        # Process all selected objects
+        for obj in selected_meshes:
+            new_obj = self.process_object(context, obj)
+            if new_obj:
+                created_objects.append(new_obj)
+
+        if not created_objects:
+            return {'CANCELLED'}
+
+        # Deselect old, select new
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in created_objects:
+            obj.select_set(True)
+        
+        context.view_layer.objects.active = created_objects[-1]
+        
+        self.report({'INFO'}, f"Created {len(created_objects)} robust UV Meshes")
         return {'FINISHED'}
