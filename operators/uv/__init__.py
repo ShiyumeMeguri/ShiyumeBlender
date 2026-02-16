@@ -1,14 +1,17 @@
 import bpy
 from . import pack_lock
-from . import render_texture
+
 from . import sync_shapekey
 from . import mesh_to_uv
 
+from . import smart_uv_redirect
+
 classes = (
     pack_lock.SHIYUME_OT_UVPackLockGroup,
-    render_texture.SHIYUME_OT_UVRenderTexture,
+
     sync_shapekey.SHIYUME_OT_MeshUVSync,
     mesh_to_uv.SHIYUME_OT_MeshToUV,
+    smart_uv_redirect.SHIYUME_OT_SmartUVRedirect,
 )
 
 def register():
