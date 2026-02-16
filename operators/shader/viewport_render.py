@@ -73,7 +73,6 @@ def PrepareMeshesForRender(objects_to_process, resolution):
 
 
 def SetupCameraAndRenderSettings(resolution):
-    # 此函数是正确的，无需更改
     original_camera = bpy.context.scene.camera
     original_engine = bpy.context.scene.render.engine
     original_dither = bpy.context.scene.render.dither_intensity
@@ -117,7 +116,6 @@ def SetupCameraAndRenderSettings(resolution):
 
 
 def RestoreOriginalSettings(settings):
-    # 此函数是正确的，无需更改
     if not settings: return
     bpy.context.scene.camera = settings['camera']
     bpy.context.scene.render.engine = settings['engine']
@@ -141,6 +139,12 @@ class SHIYUME_OT_RenderViewportAsTexture(bpy.types.Operator):
         min=128,
         max=8192,
         description="渲染纹理的分辨率"
+    )
+
+    keep_temp: bpy.props.BoolProperty(
+        name="保留临时对象",
+        default=False,
+        description="是否保留渲染过程中创建的临时对象(相机、副本等)"
     )
 
     def execute(self, context):
@@ -214,14 +218,31 @@ class SHIYUME_OT_RenderViewportAsTexture(bpy.types.Operator):
                 obj = bpy.data.objects.get(obj_name)
                 if obj:
                     obj.hide_render = is_hidden
-            
-            # [修正] 清理所有创建的临时对象
-            if objects_to_delete:
-                bpy.ops.object.select_all(action='DESELECT')
-                for obj in objects_to_delete:
-                    if obj.name in bpy.data.objects:
-                        obj.select_set(True)
-                bpy.ops.object.delete(use_global=False)
+
+            if not self.keep_temp:
+                # 清理临时副本
+                if objects_to_delete:
+                    bpy.ops.object.select_all(action='DESELECT')
+                    for obj in objects_to_delete:
+                        if obj.name in bpy.data.objects:
+                            obj.select_set(True)
+                    bpy.ops.object.delete(use_global=False)
+
+                # 清理临时相机
+                uv_cam = bpy.data.objects.get('UV_Camera')
+                if uv_cam:
+                    cam_data = uv_cam.data
+                    bpy.data.objects.remove(uv_cam, do_unlink=True)
+                    if cam_data and cam_data.users == 0:
+                        bpy.data.cameras.remove(cam_data)
+            else:
+                # keep_temp=True: 只清理副本 (原有行为)
+                if objects_to_delete:
+                    bpy.ops.object.select_all(action='DESELECT')
+                    for obj in objects_to_delete:
+                        if obj.name in bpy.data.objects:
+                            obj.select_set(True)
+                    bpy.ops.object.delete(use_global=False)
             
             # 恢复之前的选择状态
             bpy.ops.object.select_all(action='DESELECT')
