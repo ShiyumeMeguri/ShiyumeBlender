@@ -98,8 +98,15 @@ class SHIYUME_OT_SmartUVRedirect(bpy.types.Operator):
             obj.select_set(True)
         context.view_layer.objects.active = selected_meshes[0]
 
+        # 保存用户的sync设置, 稍后恢复
+        original_sync = context.scene.tool_settings.use_uv_select_sync
+
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.reveal()  # 取消隐藏所有网格
+
+        # ★ 关键: 开启Sync后select_all, 确保所有对象的所有UV都被选中
+        # 如果Sync是OFF, mesh.select_all不影响UV选择 → UV操作会漏掉部分对象
+        context.scene.tool_settings.use_uv_select_sync = True
         bpy.ops.mesh.select_all(action='SELECT')
 
         try:
@@ -107,8 +114,12 @@ class SHIYUME_OT_SmartUVRedirect(bpy.types.Operator):
         except Exception as e:
             self.report({'WARNING'}, f"Average Scale 失败: {e}")
 
-        # ── Step 3: 关闭Sync → Unstack Islands ──
+        # ── Step 3: Unstack Islands ──
+        # Unstack 需要 Sync=OFF, 但关闭Sync后UV选择状态可能丢失
+        # 技巧: 先在Sync=ON下全选mesh(=全选UV), 然后关闭Sync, UV选择状态会保留
+        bpy.ops.mesh.select_all(action='SELECT')  # Sync仍为ON → UV也全选
         context.scene.tool_settings.use_uv_select_sync = False
+        # 额外保险: 尝试在UV编辑器中也全选
         try:
             bpy.ops.uv.select_all(action='SELECT')
         except:
@@ -123,9 +134,21 @@ class SHIYUME_OT_SmartUVRedirect(bpy.types.Operator):
             self.report({'WARNING'}, "UV Toolkit 'Unstack Islands' 未找到, 跳过")
 
         # ── Step 4: UVPackMaster Pack ──
+        # Pack也需要所有UV被选中, 再次确保
+        context.scene.tool_settings.use_uv_select_sync = True
+        bpy.ops.mesh.select_all(action='SELECT')
+        context.scene.tool_settings.use_uv_select_sync = False
+        try:
+            bpy.ops.uv.select_all(action='SELECT')
+        except:
+            pass
+
         pack_ok = self._try_uvpackmaster_pack(context)
         if not pack_ok:
             self.report({'WARNING'}, "UVPackMaster 打包失败或未找到")
+
+        # 恢复用户的Sync设置
+        context.scene.tool_settings.use_uv_select_sync = original_sync
 
         # ── Step 5: Mesh to UV (生成展平Mesh对象) ──
         bpy.ops.object.mode_set(mode='OBJECT')
