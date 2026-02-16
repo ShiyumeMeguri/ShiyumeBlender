@@ -24,6 +24,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.grid_sort", icon='GRID')
             layout.operator("shiyume.mat_link_object", icon='LINKED')
             layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE')
+            layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
             layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
             layout.operator("shiyume.batch_rename", icon='SORTALPHA')
             layout.operator("shiyume.clear_empty", icon='X')
@@ -39,6 +40,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
         elif mode in {'EDIT_MESH', 'EDIT'}:
             layout.label(text="网格工具")
             layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE')
+            layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
             layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
             layout.operator("shiyume.cleanup_vgs", icon='GROUP_VERTEX')
             layout.operator("shiyume.weight_prune", icon='WPAINT_HLT')
@@ -70,6 +72,7 @@ class SHIYUME_MT_UV(bpy.types.Menu):
         layout.operator("shiyume.uv_pack_lock_group", icon='PACKAGE')
         layout.operator("shiyume.mesh_uv_sync", icon='UV_DATA')
         layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
+        layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
         layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
 
 def menu_func(self, context):
