@@ -66,7 +66,6 @@ class SHIYUME_MT_UV(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator("shiyume.uv_pack_lock_group", icon='PACKAGE')
-        layout.operator("shiyume.uv_render_texture", icon='RENDER_STILL')
         layout.operator("shiyume.mesh_uv_sync", icon='UV_DATA')
         layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
 
