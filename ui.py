@@ -39,6 +39,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
 
         elif mode in {'EDIT_MESH', 'EDIT'}:
             layout.label(text="网格工具")
+            layout.operator("shiyume.grid_cut", icon='MOD_ARRAY')
             layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE')
             layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
             layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
