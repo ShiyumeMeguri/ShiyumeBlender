@@ -27,6 +27,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
             layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
             layout.operator("shiyume.batch_rename", icon='SORTALPHA')
+            layout.operator("shiyume.sort_roots_x", icon='SORTSIZE')
             layout.operator("shiyume.clear_empty", icon='X')
             
             layout.separator()
