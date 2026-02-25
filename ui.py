@@ -76,6 +76,9 @@ class SHIYUME_MT_UV(bpy.types.Menu):
         layout.operator("shiyume.mesh_to_uv", icon='MESH_UVSPHERE', text="Mesh to UV (网格转UV)")
         layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
         layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
+        layout.separator()
+        layout.operator("shiyume.uv_island_equidistant", icon='ALIGN_CENTER')
+        layout.operator("shiyume.uv_island_sort_height", icon='SORTSIZE')
 
 def menu_func(self, context):
     self.layout.menu("SHIYUME_MT_Main")

@@ -3,6 +3,7 @@ from . import pack_lock
 from . import sync_shapekey
 from . import mesh_to_uv
 from . import smart_uv_redirect
+from . import island_arrange
 
 classes = (
     pack_lock.SHIYUME_OT_UVPackLockGroup,
@@ -10,6 +11,8 @@ classes = (
     mesh_to_uv.SHIYUME_OT_MeshToUV,
     smart_uv_redirect.SHIYUME_OT_PrepareUVCopy,
     smart_uv_redirect.SHIYUME_OT_SmartUVRedirect,
+    island_arrange.SHIYUME_OT_UVIslandEquidistant,
+    island_arrange.SHIYUME_OT_UVIslandSortByHeight,
 )
 
 def register():
