@@ -61,11 +61,10 @@ class SHIYUME_OT_MeshToUV(bpy.types.Operator):
             else None
         )
 
-        # 1. Duplicate object and mesh data so the original object remains untouched.
-        new_obj = source_obj.copy()
-        new_obj.data = source_obj.data.copy()
-        new_obj.name = source_obj.name + "_UV_Shape"
-        new_obj.data.name = source_obj.data.name + "_UV_Shape"
+        # 1. Duplicate only mesh data. The new object keeps default object-level state.
+        new_mesh_data = source_obj.data.copy()
+        new_mesh_data.name = source_obj.data.name + "_UV_Shape"
+        new_obj = bpy.data.objects.new(source_obj.name + "_UV_Shape", new_mesh_data)
         context.collection.objects.link(new_obj)
 
         # 2. Split UV island borders on the duplicate and record which source vertex
