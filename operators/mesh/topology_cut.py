@@ -293,6 +293,45 @@ class SHIYUME_OT_TopologyCut(bpy.types.Operator):
             if relative_key is not None:
                 new_key.relative_key = relative_key
 
+    def _copy_uv_layers(self, source_mesh, new_mesh):
+        if not source_mesh.uv_layers:
+            return
+
+        source_active_index = source_mesh.uv_layers.active_index
+        source_render_index = next(
+            (
+                index
+                for index, uv_layer in enumerate(source_mesh.uv_layers)
+                if uv_layer.active_render
+            ),
+            0,
+        )
+
+        for source_layer in source_mesh.uv_layers:
+            new_layer = new_mesh.uv_layers.new(name=source_layer.name)
+            for loop_index, source_uv in enumerate(source_layer.uv):
+                new_uv = new_layer.uv[loop_index]
+                new_uv.vector = source_uv.vector.copy()
+                if hasattr(new_uv, "pin") and hasattr(source_uv, "pin"):
+                    new_uv.pin = source_uv.pin
+                if hasattr(new_uv, "vertex_selection") and hasattr(
+                    source_uv, "vertex_selection"
+                ):
+                    new_uv.vertex_selection = source_uv.vertex_selection
+                if hasattr(new_uv, "edge_selection") and hasattr(
+                    source_uv, "edge_selection"
+                ):
+                    new_uv.edge_selection = source_uv.edge_selection
+
+        if new_mesh.uv_layers:
+            new_mesh.uv_layers.active_index = min(
+                source_active_index, len(new_mesh.uv_layers) - 1
+            )
+            for index, uv_layer in enumerate(new_mesh.uv_layers):
+                uv_layer.active_render = index == min(
+                    source_render_index, len(new_mesh.uv_layers) - 1
+                )
+
     def _rebuild_target(self, source, target):
         if not self._has_shape_key(source, self.flat_key_name):
             return None, f"参考网格缺少 Shape Key: {self.flat_key_name}"
@@ -333,6 +372,7 @@ class SHIYUME_OT_TopologyCut(bpy.types.Operator):
         new_mesh = bpy.data.meshes.new(old_name + "_topology")
         new_mesh.from_pydata(basis_points, source_loose_edges, source_faces)
         new_mesh.update()
+        self._copy_uv_layers(source.data, new_mesh)
 
         for material in old_materials:
             new_mesh.materials.append(material)
