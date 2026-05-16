@@ -1,0 +1,27 @@
+修复导出到Unity时 Root骨架不是作为根对象的问题 Armature对象会 傻逼Blender官方说是设计上差异不属于bug所以常年不修
+当Armature名字是角色名时 根骨骼会变成这样 就导致动画无法通用 因为unity是按名称映射的
+Chiruha
+    Chiruha <- 名称查找时出问题
+        Root
+    Mesh1
+    Mesh2
+    Mesh3
+
+Meguri
+    Meguri <- 名称查找时出问题
+        Root
+    Mesh1
+    Mesh2
+    Mesh3
+
+----------
+本副本基于 Blender 5.1 官方 io_scene_fbx 移植 (从原 4.2+ UnityFix 移植上来)
+改动点:
+1. __init__.py: bl_info name 加 UnityFix 后缀, version 改为 (5,15,1)
+2. __init__.py: apply_scale_options 默认改为 FBX_SCALE_ALL (Unity 友好)
+3. __init__.py: add_leaf_bones 默认改为 False (Unity 不要叶骨)
+4. fbx_utils.py: get_blenderID_name 处理 Iterable 时只返回最后一个名字 (避免拼接破坏 Unity 名称映射)
+5. export_fbx_bin.py: fbx_skeleton_from_armature 检测 root 骨, 将 mesh 的 arm_parent 设为 root_bone 而不是 arm_obj
+6. export_fbx_bin.py: ob_obj.parented_to_armature = False (不旋转匹配根对象, 按原样导出到 Unity)
+7. export_fbx_bin.py: 注释掉 add_leaf_bones 生成块 (强制不生成)
+8. import_fbx.py: action_name 不再拼接 id_data.name 前缀 (动画名干净便于 Unity 映射)
