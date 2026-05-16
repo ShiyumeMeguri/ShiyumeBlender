@@ -1,5 +1,8 @@
 import bpy
 
+from ._compat import list_action_fcurves, remove_fcurve, get_active_action
+
+
 class SHIYUME_OT_FixAllAnimationIssues(bpy.types.Operator):
     """一键修复常见的动画问题：
     1. 移除烘焙产生的隐藏自定义属性关键帧
@@ -21,16 +24,15 @@ class SHIYUME_OT_FixAllAnimationIssues(bpy.types.Operator):
 
     def execute(self, context):
         armature = context.active_object
-        action = armature.animation_data.action if armature.animation_data else None
-        
+        action = get_active_action(armature)
+
         # 1. Cleanup Bake Frames (Hidden Properties)
         if self.fix_bake:
             count = 0
             for act in bpy.data.actions:
-                for i in range(len(act.fcurves)-1, -1, -1):
-                    fcurve = act.fcurves[i]
+                for owner, fcurve in list_action_fcurves(act):
                     if '"]["' in fcurve.data_path:
-                        act.fcurves.remove(fcurve)
+                        remove_fcurve(owner, fcurve)
                         count += 1
             if count > 0:
                 self.report({'INFO'}, f"已清除 {count} 个烘焙残留曲线")
@@ -38,30 +40,24 @@ class SHIYUME_OT_FixAllAnimationIssues(bpy.types.Operator):
         # 2. Cleanup Selected Bone Loc/Scale
         if self.fix_transforms and action and context.mode == 'POSE':
             for bone in context.selected_pose_bones:
-                to_remove = []
-                for fcurve in action.fcurves:
-                    if fcurve.data_path.startswith(f'pose.bones["{bone.name}"]'):
+                prefix = f'pose.bones["{bone.name}"]'
+                for owner, fcurve in list_action_fcurves(action):
+                    if fcurve.data_path.startswith(prefix):
                         if "location" in fcurve.data_path or "scale" in fcurve.data_path:
-                            to_remove.append(fcurve)
-                for fcurve in to_remove:
-                    action.fcurves.remove(fcurve)
+                            remove_fcurve(owner, fcurve)
             self.report({'INFO'}, "已清除选中骨骼的位移/缩放关键帧")
 
         # 3. Fix Invalid Anim Paths
         if self.fix_paths:
             for act in bpy.data.actions:
-                to_remove = []
-                for fcurve in act.fcurves:
+                for owner, fcurve in list_action_fcurves(act):
                     if fcurve.data_path.startswith('pose.bones[') and ']' in fcurve.data_path:
-                        # Extract bone name carefully
                         try:
-                            # format: pose.bones["BoneName"].property
                             bone_name = fcurve.data_path.split('[')[1].split(']')[0].strip('"')
                             if bone_name not in armature.pose.bones:
-                                to_remove.append(fcurve)
-                        except: pass
-                for fcurve in to_remove:
-                    act.fcurves.remove(fcurve)
+                                remove_fcurve(owner, fcurve)
+                        except Exception:
+                            pass
             self.report({'INFO'}, "已清理无效骨骼路径")
 
         # 4. Clean Bone Collections
@@ -72,20 +68,19 @@ class SHIYUME_OT_FixAllAnimationIssues(bpy.types.Operator):
                 if name in armature.data.collections:
                     for bone in armature.data.collections[name].bones:
                         bones_to_clean.add(bone.name)
-            
+
             if bones_to_clean:
                 for act in bpy.data.actions:
-                    to_remove = []
-                    for fcurve in act.fcurves:
+                    for owner, fcurve in list_action_fcurves(act):
                         try:
                             path_to_bone, transform_type = fcurve.data_path.rsplit('.', 1)
-                            if not path_to_bone.startswith('pose.bones["'): continue
+                            if not path_to_bone.startswith('pose.bones["'):
+                                continue
                             bone_name = path_to_bone.split('"')[1]
                             if bone_name in bones_to_clean and transform_type in ["location", "scale"]:
-                                to_remove.append(fcurve)
-                        except: continue
-                    for fcurve in to_remove:
-                        act.fcurves.remove(fcurve)
+                                remove_fcurve(owner, fcurve)
+                        except Exception:
+                            continue
                 self.report({'INFO'}, "已清除特定集合的变换数据")
 
         return {'FINISHED'}

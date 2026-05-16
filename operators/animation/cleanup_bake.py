@@ -1,5 +1,8 @@
 import bpy
 
+from ._compat import list_action_fcurves, remove_fcurve
+
+
 class SHIYUME_OT_CleanupBakeFrames(bpy.types.Operator):
     """Delete custom property fcurves (often hidden frames from baking)"""
     bl_idname = "shiyume.cleanup_bake_frames"
@@ -9,10 +12,9 @@ class SHIYUME_OT_CleanupBakeFrames(bpy.types.Operator):
     def execute(self, context):
         count = 0
         for action in bpy.data.actions:
-            for i in range(len(action.fcurves)-1, -1, -1):
-                fcurve = action.fcurves[i]
+            for owner, fcurve in list_action_fcurves(action):
                 if '"]["' in fcurve.data_path:
-                    action.fcurves.remove(fcurve)
+                    remove_fcurve(owner, fcurve)
                     count += 1
         self.report({'INFO'}, f"Removed {count} custom property fcurves")
         return {'FINISHED'}

@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Shiyume Blender Addon",
     "author": "Shiyume",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (4, 0, 0),
-    "location": "View3D > Context (W) Menu",
-    "description": "Consolidated toolset for modeling, animation, and UVs",
+    "location": "View3D > Sidebar (Shiyume) | Context (W) Menu | Shift+A > Mesh",
+    "description": "Consolidated toolset for modeling, animation, and UVs (Blender 4.x + 5.x)",
     "category": "Object",
 }
 

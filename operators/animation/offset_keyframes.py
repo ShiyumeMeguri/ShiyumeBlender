@@ -1,6 +1,9 @@
 import bpy
 from math import radians
 
+from ._compat import iter_action_fcurves, get_active_action
+
+
 class SHIYUME_OT_AnimationOffset(bpy.types.Operator):
     """批量偏移除了选中的骨骼关键帧。
     支持位置和旋转的偏移，并提供多种插值模式（线性、平滑等）来控制偏移随时间的变化。
@@ -13,7 +16,7 @@ class SHIYUME_OT_AnimationOffset(bpy.types.Operator):
     rot_offset: bpy.props.FloatVectorProperty(name="旋转偏移 (角度)", size=3)
     frame_start: bpy.props.IntProperty(name="开始帧", default=0)
     frame_end: bpy.props.IntProperty(name="结束帧", default=0)
-    
+
     mode_items = [
         ('constant', '恒定', '整个时间段保持相同的偏移量'),
         ('linear_increase', '线性增加', '偏移量随时间线性增加'),
@@ -33,31 +36,37 @@ class SHIYUME_OT_AnimationOffset(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         rot_offset_rad = tuple(radians(rot) for rot in self.rot_offset)
-        action = obj.animation_data.action if obj.animation_data else None
-        
+        action = get_active_action(obj)
+
         if not action:
             self.report({'WARNING'}, "No active action found")
             return {'CANCELLED'}
 
         for pbone in context.selected_pose_bones:
-            for fcurve in action.fcurves:
-                if fcurve.data_path.startswith(f'pose.bones["{pbone.name}"]'):
+            prefix = f'pose.bones["{pbone.name}"]'
+            for _owner, fcurve in iter_action_fcurves(action):
+                if fcurve.data_path.startswith(prefix):
                     for kp in fcurve.keyframe_points:
                         if self.frame_start == 0 and self.frame_end == 0:
                             in_range = True
                         else:
                             in_range = self.frame_start <= kp.co.x <= self.frame_end
-                        
+
                         if in_range:
                             t = 0
                             if self.frame_start != self.frame_end:
                                 t = (kp.co.x - self.frame_start) / (self.frame_end - self.frame_start)
-                            
-                            if self.offset_mode == 'linear_increase': factor = t
-                            elif self.offset_mode == 'linear_decrease': factor = 1 - t
-                            elif self.offset_mode == 'smoothstep_increase': factor = self.smoothstep(t)
-                            elif self.offset_mode == 'smoothstep_decrease': factor = 1 - self.smoothstep(t)
-                            else: factor = 1
+
+                            if self.offset_mode == 'linear_increase':
+                                factor = t
+                            elif self.offset_mode == 'linear_decrease':
+                                factor = 1 - t
+                            elif self.offset_mode == 'smoothstep_increase':
+                                factor = self.smoothstep(t)
+                            elif self.offset_mode == 'smoothstep_decrease':
+                                factor = 1 - self.smoothstep(t)
+                            else:
+                                factor = 1
 
                             if 'location' in fcurve.data_path:
                                 kp.co[1] += self.loc_offset[fcurve.array_index] * factor
@@ -67,5 +76,5 @@ class SHIYUME_OT_AnimationOffset(bpy.types.Operator):
                             elif 'rotation_quaternion' in fcurve.data_path and pbone.rotation_mode == 'QUATERNION':
                                 if 0 < fcurve.array_index < 4:
                                     kp.co[1] += rot_offset_rad[fcurve.array_index - 1] * factor
-        
+
         return {'FINISHED'}

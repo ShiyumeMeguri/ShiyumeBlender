@@ -34,7 +34,18 @@ class SHIYUME_OT_ViewportSimpleRender(bpy.types.Operator):
         context.scene.render.filepath = temp_image_path
         context.scene.render.image_settings.file_format = 'PNG'
 
-        bpy.ops.render.opengl(write_still=True, view_context=True)
+        try:
+            bpy.ops.render.opengl(write_still=True, view_context=True)
+        except RuntimeError as e:
+            # Restore state before bailing out
+            for space in view3d_spaces:
+                space.overlay.show_overlays = True
+            context.scene.render.resolution_x = orig_res_x
+            context.scene.render.resolution_y = orig_res_y
+            context.scene.render.filepath = orig_filepath
+            context.scene.render.image_settings.file_format = orig_format
+            self.report({'ERROR'}, f"渲染失败 (需要 3D 视口与 OpenGL 上下文): {e}")
+            return {'CANCELLED'}
 
         for space in view3d_spaces:
             space.overlay.show_overlays = True
