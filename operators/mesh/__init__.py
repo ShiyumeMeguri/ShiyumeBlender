@@ -6,7 +6,10 @@ from . import topology_cut
 from . import cleanup_vgs
 from . import weight_prune
 from . import batch_rename
-from . import material_link
+from . import select_avg_size_half
+from . import vg_smooth_merge
+from . import match_weights_active
+from . import clear_zero_vgs
 
 classes = (
     aabb_select.SHIYUME_OT_AABBSelect,
@@ -16,7 +19,10 @@ classes = (
     cleanup_vgs.SHIYUME_OT_CleanupVertexGroups,
     weight_prune.SHIYUME_OT_WeightPrune,
     batch_rename.SHIYUME_OT_BatchRename,
-    material_link.SHIYUME_OT_MaterialLinkObject,
+    select_avg_size_half.SHIYUME_OT_SelectAvgSizeHalf,
+    vg_smooth_merge.SHIYUME_OT_VGSmoothMerge,
+    match_weights_active.SHIYUME_OT_MatchWeightsActive,
+    clear_zero_vgs.SHIYUME_OT_ClearZeroVertexGroups,
 )
 
 
