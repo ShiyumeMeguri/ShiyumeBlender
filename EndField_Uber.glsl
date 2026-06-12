@@ -1,24 +1,7 @@
 /*************************************************************************
   EndField_Uber.glsl
   —— Substance Painter GLSL 全功能移植版：Endfield 角色 Uber
-
-  源（Unity, FractalProject/Assets/Endfield, 全部为像素级真值）：
-    HGRP_CharacterNPR_Fix.shader            → Part 0 Standard (Cloth/Body)
-    HGRP_CharacterNPR_Skin_Fix.shader       → Part 1 Face / 身体皮肤
-    HGRP_CharacterNPR_Eye_Fix.shader        → Part 2 Eyes / Part 5 Eyebrow(无Matcap路径)
-    HGRP_CharacterNPR_Hair_Fix.shader       → Part 3 Hair
-    HGRP_CharacterNPR_Fur_Fix.shader        → Part 4 Fur (片元全量；壳层挤出见[H10])
-    HGRP_CharacterNPR_VFX_Fix.shader        → Part 6 VFX (粒子特效)
-    HGRP_CharacterNPR_OverlayShadow_Fix.shader → Part 7 OverlayShadow (乘法阴影预览)
-
-  移植铁律（与旧版一致）：
-    1. 光照 / PBR 算法逐行复制自各源 shader 片元函数，
-       未改动任何数学逻辑、分支、常量。中间算法当黑盒。
-    2. 仅修改"输入/输出"：Unity 纹理采样/主光源/相机矩阵/内置变量
-       → Substance 通道纹理 / 自定义贴图参数 / auto 属性 / 内置函数。
-    3. Unity shader_feature → SP 运行时 bool 开关（uniform 分支，数学逐位一致）。
-    4. 所有标量/向量参数以原名声明为 SP UI 参数，默认值与 Unity Properties 一致。
-
+  
   ============== 通道 / 贴图映射（统一槽位思路，按部位换语义） ==============
   引擎通道（所有部位共用）：
     basecolor → _BaseMap.rgb     opacity → _BaseMap.a
@@ -40,6 +23,8 @@
   [H3] 主光源颜色：UI 参数 v_MainLightColor；方向 = SP 视口主灯 light_main 经 i_LightRotX/Y/Z 旋转。
   [H4] unity_ObjectToWorld：SP 模型即世界（无变换）→ 取单位矩阵；枢轴 originX/Z=0。
        Face/Hair/Eye 的对象轴 = 世界轴 (1,0,0)/(0,1,0)/(0,0,1)，_FBXRotationFix 仍按原逻辑交换。
+       Face SDF 基轴 (源=O2W 列0/列2) 直接由 _FaceRight/_FaceForward 以 SP 世界空间输入
+       (±1, rip FBX 实测面朝 -Z ⇒ Unity .mat 轴 Z 取反)，faceUp=cross(right,fwd) 重建列1。
   [H5] ApplyCustomAO（Fix 沙盒自定义 AO）：跳过。
   [H6] 反射立方图：_CharMaxCubemap(Standard) 与 unity_SpecCube0(Fur) 都 → SP 环境 envSampleLOD()。
        mip 公式不变；环境内容随 SP 环境贴图而变（建议挂 CharCubemap.exr）。
@@ -214,23 +199,16 @@
     uniform float _SkinRimOffScale;
     //: param custom { "default": 1.0, "label": "脸部边缘光强 FaceRimOffScale (SDF区)", "min": 0.0, "max": 1.5, "group": "A Face" }
     uniform float _FaceRimOffScale;
-    //: param custom { "default": [0.0, 0.0, 1.0], "label": "脸正面朝向 FaceForward (世界)", "group": "A Face" }
+    //- 源 shader 的脸基轴 = unity_ObjectToWorld 列0(右)/列2(前), 从不读 .mat 的 FaceForward/FaceRight。
+    //- SP 模型烘死在世界空间无矩阵可读 → 这两个参数直接填"SP 世界空间"的脸轴, 支持负值
+    //- (必须显式声明 min/max, 否则 SP UI 钳 0..1 输不进负数)。
+    //- rip FBX 进 SP 实测面朝 -Z: Unity 轴 → SP 轴 = Z 取反 (X/Y 不变), 故默认 (0,0,-1)/(1,0,0)。
+    //- 调试: 明暗随光前后扫掠反相 → FaceForward 整体取反; 阴影左右镜像取错边 → FaceRight 整体取反。
+    //- 不需要第三个 FaceBack/FaceUp 参数: Up = cross 重建 (源列1, 仅 ~1e-4 权重), Back = -Forward。
+    //: param custom { "default": [0.0, 0.0, -1.0], "label": "脸正面朝向 FaceForward (SP世界轴)", "min": -1.0, "max": 1.0, "group": "A Face" }
     uniform vec3 _FaceForward;
-    //: param custom { "default": [1.0, 0.0, 0.0], "label": "脸右侧朝向 FaceRight (世界)", "group": "A Face" }
+    //: param custom { "default": [1.0, 0.0, 0.0], "label": "脸右侧朝向 FaceRight (SP世界轴)", "min": -1.0, "max": 1.0, "group": "A Face" }
     uniform vec3 _FaceRight;
-    //: param custom {
-    //:   "default": 2,
-    //:   "label": "SP 网格前向修正 (脸基轴绕Y旋转)",
-    //:   "widget": "combobox",
-    //:   "values": {
-    //:     "0° (.mat 原样, 模型面朝 +Z)": 0,
-    //:     "90°": 1,
-    //:     "180° (模型面朝 -Z, FBX 导入实测)": 2,
-    //:     "270°": 3
-    //:   },
-    //:   "group": "A Face"
-    //: }
-    uniform int i_FaceAxisYaw;
     //: param custom { "default": false, "label": "FBX -90 旋转修正 FBXRotationFix", "group": "A Face" }
     uniform bool u_FBXRotationFix;
     //: param custom { "default": false, "label": "使用表情贴图 _EMOTION_MAP", "group": "A Face" }
@@ -705,18 +683,6 @@
   //  camFwd  : UNITY_MATRIX_I_V 第三列 (相机背向, Endfield 约定, 与 Unity 端同号)
   float3 GetCamFwd() {
       return normalize((inverse(uniform_camera_view_matrix) * float4(0.0, 0.0, 1.0, 0.0)).xyz);
-  }
-
-  // ---- SP 网格朝向修正 (Face SDF 基轴) ----
-  // .mat 的 _FaceForward/_FaceRight 是 Unity 端"角色面朝世界 +Z"姿态下的世界轴;
-  // FBX 进 SP 后模型实测面朝 -Z (aglina: 背景旋转 181° 正面光时 objLightZ<0 →
-  // 脸被判背光; 91° 侧光左右镜像取错边)。i_FaceAxisYaw 把脸基轴绕 +Y 旋转对齐
-  // SP 网格实际朝向, 默认 180°。
-  float3 RotY_FaceAxis(float3 v) {
-      if (i_FaceAxisYaw == 1) return float3( v.z, v.y, -v.x); // 90°
-      if (i_FaceAxisYaw == 2) return float3(-v.x, v.y, -v.z); // 180°
-      if (i_FaceAxisYaw == 3) return float3(-v.z, v.y,  v.x); // 270°
-      return v;
   }
 
   // ---- Unity uv (含 _BaseMap_ST) ----
@@ -1252,9 +1218,15 @@
       float3 camFwd = GetCamFwd();
 
       // ---- 脸空间相机向量 (SDF rim gate + skin camGate; 无条件算, 关闭时不消费) ----
-      float3 faceFwd = RotY_FaceAxis(_FaceForward.xyz);   // SP 网格朝向修正
-      float3 faceRight = RotY_FaceAxis(_FaceRight.xyz);
-      float3 faceUp = cross(faceFwd, faceRight);
+      // 源: faceRight = unity_ObjectToWorld 列0 (objLightX→lightSide 左右镜像),
+      //     faceFwd   = unity_ObjectToWorld 列2 (objLightZ→sdfLightZ 前后/明暗扫描),
+      //     faceUp    = 列1 — cross 重建, 无需第三参数。参数即 SP 世界轴原值 (±1),
+      // 不再经过任何旋转/翻转重映射 (Unity↔SP 手性差是镜像, 纯旋转表达不了, 只能靠负分量)。
+      // cross 取 right×fwd: 默认 ((1,0,0),(0,0,-1)) 给出 (0,1,0) 世界上方与源列1一致;
+      // faceUp 仅以 NEAR_ZERO 权重进 SDF 法线重建, camFwdObj.y 无消费者, 符号无关紧要。
+      float3 faceFwd = _FaceForward.xyz;
+      float3 faceRight = _FaceRight.xyz;
+      float3 faceUp = cross(faceRight, faceFwd);
       float3 camFwdObj = float3(
           dot(camFwd, faceRight),
           dot(camFwd, faceUp),
