@@ -25,13 +25,12 @@
     metallic  → RMOS Metal(.r)   specularlevel → RMOS Spec(.g)
     roughness → 1-Smooth(.a)     AO → RMOS Shadow(.b) [H1]
     normal    → _BumpMap         emissive → _EmissionMap
-  user 通道（按部位换语义，对位 Ruri _MaskMap0X 槽位）：
-    user0 = Face: SDF Mask (rgba: rim/blend/body/ctrl)
-    user1 = Standard: ClearCoat Mask(.r) / Hair: Split Normal (RG=diffuse BA=spec 裸[0,1])
-    user2 = Fur: Direction Map (RG=dir B=density A=length)
-  自定义贴图参数（共享资产 / 需任意 UV 变换，不可绘制）：
-    _RampMap _SpecRampMap _ShadowLutTex _SDFLightmap _EmotionMap _HighlightMap
-    _MatcapTex _StrokeMap _LineMap _ParallaxTex _FurMap _FurDyeMap
+  user 通道：
+    user1 = Standard: ClearCoat Mask (.r, 可绘制)
+    (SP 通道无 Alpha — SDF Mask/Split Normal/Fur Direction 等 RGBA 资产走 sampler 参数)
+  自定义贴图参数（共享资产 / RGBA 完整 / 需任意 UV 变换，不可绘制）：
+    _RampMap _SpecRampMap _ShadowLutTex _SDFMask _SDFLightmap _EmotionMap _HighlightMap
+    _MatcapTex _SplitNormalMap _StrokeMap _LineMap _ParallaxTex _FurMap _FurDirMap _FurDyeMap
     _VFXSpecialMainTex _VFXSpecialBlendTex (Fur烬火)
     _VFXMainTex _VFXMaskTex _VFXBlendTex _VFXDisturbTex _VFXNormalMap (VFX part)
 
@@ -47,7 +46,10 @@
   [H7] 引擎通道按 1:1 UV 绘制，不支持 _BaseMap_ST 平铺；_BaseMap_ST 参数只作用于
        自定义贴图参数的 UV 公式（与 Unity 一致）。默认 (1,1,0,0) 时两边完全一致。
   [H8] getTSNormal(sparse_coord)：取 SP 法线通道切线空间法线（替代 Unity DXT5nm 解码）。
-  [H9] SP 视口自带 tonemap/曝光；Unity 后处理不在本 shader 内。烬火等 HDR 项观感受此影响。
+  [H9] HG 后处理 tonemap (ACES_modified, 源 lutbuilder2d b4) 已内置: u_UseEndfieldTonemap
+       默认开 + f_TonemapExposure。SP 显示设置的 Tone mapping 务必选 Linear 防二次映射;
+       Bloom/调色 LUT 等其余后处理仍不在本 shader 内。另: sRGBTexture=1 的贴图参数
+       (_ShadowLutTex/_EmotionMap/_MatcapTex/_ParallaxTex/Fur·VFX 系) 已补硬件 sRGB 解码。
   [H10] Fur 壳层挤出是顶点/多 pass：SP 不可能 → f_FurShellIdx 滑条预览任意单壳层的片元着色
        （0=底面，1=最外层）。clip(shellAlpha-0.003) 保留。
   [H11] Hair 皮肤高光的深度边缘检测(_CameraDepthTexture)：SP 无场景深度 →
@@ -152,6 +154,10 @@
     uniform float f_AlphaClip;
     //: param custom { "default": 0.0, "label": "AlphaPremultiply", "min": 0.0, "max": 1.0, "group": "5 渲染设置" }
     uniform float _AlphaPremultiply;
+    //: param custom { "default": true, "label": "EndField Tonemap ACES_modified (SP显示设置Tone mapping请选Linear)", "group": "5 渲染设置" }
+    uniform bool u_UseEndfieldTonemap;
+    //: param custom { "default": 1.0, "label": "Tonemap 前曝光", "min": 0.0, "max": 4.0, "group": "5 渲染设置" }
+    uniform float f_TonemapExposure;
   //- endregion
 
   //- region ClearCoat (Standard)
@@ -200,6 +206,8 @@
     uniform bool u_UseSDFLightmap;
     //: param custom { "default": "", "default_color": [0.0,0.0,0.0,1.0], "label": "SDF Lightmap", "usage": "texture", "group": "A Face" }
     uniform sampler2D _SDFLightmap;
+    //: param custom { "default": "", "default_color": [1.0,1.0,0.0,0.0], "label": "SDF Mask (rgba: rim/blend/body/ctrl)", "usage": "texture", "group": "A Face" }
+    uniform sampler2D _SDFMask;
     //: param custom { "default": [1.0, 1.0, 1.0, 1.0], "label": "皮肤边缘光色 SDFRimColor", "widget":"color", "group": "A Face" }
     uniform vec4 _SDFRimColor;
     //: param custom { "default": 0.5, "label": "皮肤边缘光强 SkinRimOffScale", "min": 0.0, "max": 1.5, "group": "A Face" }
@@ -210,6 +218,19 @@
     uniform vec3 _FaceForward;
     //: param custom { "default": [1.0, 0.0, 0.0], "label": "脸右侧朝向 FaceRight (世界)", "group": "A Face" }
     uniform vec3 _FaceRight;
+    //: param custom {
+    //:   "default": 2,
+    //:   "label": "SP 网格前向修正 (脸基轴绕Y旋转)",
+    //:   "widget": "combobox",
+    //:   "values": {
+    //:     "0° (.mat 原样, 模型面朝 +Z)": 0,
+    //:     "90°": 1,
+    //:     "180° (模型面朝 -Z, FBX 导入实测)": 2,
+    //:     "270°": 3
+    //:   },
+    //:   "group": "A Face"
+    //: }
+    uniform int i_FaceAxisYaw;
     //: param custom { "default": false, "label": "FBX -90 旋转修正 FBXRotationFix", "group": "A Face" }
     uniform bool u_FBXRotationFix;
     //: param custom { "default": false, "label": "使用表情贴图 _EMOTION_MAP", "group": "A Face" }
@@ -248,7 +269,9 @@
   //- endregion
 
   //- region Hair (Part 3)
-    //: param custom { "default": true, "label": "拆分高光法线 _SPECULAR_NORMALMAP (user1.ba)", "group": "C Hair" }
+    //: param custom { "default": "", "default_color": [0.5,0.5,0.5,0.5], "label": "Split Normal Map (RG=diffuse BA=spec 裸[0,1])", "usage": "texture", "group": "C Hair" }
+    uniform sampler2D _SplitNormalMap;
+    //: param custom { "default": true, "label": "拆分高光法线 _SPECULAR_NORMALMAP (.ba)", "group": "C Hair" }
     uniform bool u_UseSpecBumpMap;
     //: param custom { "default": 1.0, "label": "高光法线强度 SpecBumpScale", "min": 0.0, "max": 4.0, "group": "C Hair" }
     uniform float _SpecBumpScale;
@@ -317,7 +340,9 @@
     uniform float _FurEdgeFade;
     //: param custom { "default": 0.0, "label": "透光强度 FurTTIntensity", "min": 0.0, "max": 1.0, "group": "D Fur" }
     uniform float _FurTTIntensity;
-    //: param custom { "default": 0.0, "label": "使用方向图 FurDirMapEnable (user2)", "min": 0.0, "max": 1.0, "group": "D Fur" }
+    //: param custom { "default": "", "default_color": [0.5,0.5,1.0,1.0], "label": "Fur Direction Map (RG=dir B=density A=length)", "usage": "texture", "group": "D Fur" }
+    uniform sampler2D _FurDirMap;
+    //: param custom { "default": 0.0, "label": "使用方向图 FurDirMapEnable", "min": 0.0, "max": 1.0, "group": "D Fur" }
     uniform float _FurDirMapEnable;
     //: param custom { "default": 0.0, "label": "毛尖锐化 FurSharpen", "min": 0.0, "max": 1.0, "group": "D Fur" }
     uniform float _FurSharpen;
@@ -576,16 +601,11 @@
   uniform SamplerSparse opacity_tex;
   // emissive_tex 由 lib-emissive.glsl 提供
 
-  //- 统一槽位 user 通道 (按部位换语义, 对位 Ruri _MaskMap0X):
-  //- user0 = Face SDF Mask (rgba)
-  //: param auto channel_user0
-  uniform SamplerSparse slot_user0_tex;
-  //- user1 = Standard ClearCoat Mask(.r) / Hair Split Normal (RG=diffuse BA=spec 裸[0,1])
+  //- user1 = Standard: ClearCoat Mask (.r, 可绘制)。
+  //- 注: SP 通道无 Alpha — Face SDF Mask(.w)/Hair SplitNormal(.ba)/Fur Direction 改走
+  //-     sampler2D 参数 (_SDFMask/_SplitNormalMap/_FurDirMap), 保证 RGBA 完整 (BuildSPInputs 原样导出)。
   //: param auto channel_user1
   uniform SamplerSparse slot_user1_tex;
-  //- user2 = Fur Direction Map (RG=dir B=density A=length)
-  //: param auto channel_user2
-  uniform SamplerSparse slot_user2_tex;
 //- }
 
 //----------------------------------------------------------------------region 引擎 auto 属性
@@ -652,6 +672,25 @@
           : (1.055 * pow(abs(c), 0.41666666) - 0.055);
   }
 
+  // ---- Unity 硬件 sRGB 采样解码补偿 ----
+  // 这些贴图资产在 Unity 端 .meta sRGBTexture=1 (实测全角色普查):
+  //   _ShadowLutTex _EmotionMap _MatcapTex _ParallaxTex _FurDirMap _FurDyeMap
+  //   _VFXMainTex _VFXMaskTex _VFXBlendTex _VFXDisturbTex _VFXSpecialMainTex _VFXSpecialBlendTex
+  // Unity 采样器自动 sRGB→Linear; SP 自定义贴图参数为裸采样, 必须手动补同款解码
+  // (alpha 通道不解码, 与硬件行为一致)。注: 解码在双线性过滤之后, 与硬件
+  // "先解码后过滤"在 texel 间插值处有极小偏差, LUT 取 texel 中心时无差。
+  float SRGBToLinear_Custom(float c) {
+      return (c <= 0.04045) ? (c / 12.92)
+          : pow(abs((c + 0.055) / 1.055), 2.4);
+  }
+  float3 SRGBToLinear3(float3 c) {
+      return float3(SRGBToLinear_Custom(c.r), SRGBToLinear_Custom(c.g), SRGBToLinear_Custom(c.b));
+  }
+  float4 SampleSRGBTex(sampler2D tex, float2 uv) {
+      float4 s = texture(tex, uv);
+      return float4(SRGBToLinear3(s.rgb), s.a);
+  }
+
   // ---- 主光方向旋转 (NPR_Uber.glsl 同款 YXZ 欧拉) ----
   mat3 efRotateX(float r) { float c = cos(r), s = sin(r); return mat3(1,0,0, 0,c,s, 0,-s,c); }
   mat3 efRotateY(float r) { float c = cos(r), s = sin(r); return mat3(c,0,-s, 0,1,0, s,0,c); }
@@ -668,6 +707,18 @@
       return normalize((inverse(uniform_camera_view_matrix) * float4(0.0, 0.0, 1.0, 0.0)).xyz);
   }
 
+  // ---- SP 网格朝向修正 (Face SDF 基轴) ----
+  // .mat 的 _FaceForward/_FaceRight 是 Unity 端"角色面朝世界 +Z"姿态下的世界轴;
+  // FBX 进 SP 后模型实测面朝 -Z (aglina: 背景旋转 181° 正面光时 objLightZ<0 →
+  // 脸被判背光; 91° 侧光左右镜像取错边)。i_FaceAxisYaw 把脸基轴绕 +Y 旋转对齐
+  // SP 网格实际朝向, 默认 180°。
+  float3 RotY_FaceAxis(float3 v) {
+      if (i_FaceAxisYaw == 1) return float3( v.z, v.y, -v.x); // 90°
+      if (i_FaceAxisYaw == 2) return float3(-v.x, v.y, -v.z); // 180°
+      if (i_FaceAxisYaw == 3) return float3(-v.z, v.y,  v.x); // 270°
+      return v;
+  }
+
   // ---- Unity uv (含 _BaseMap_ST) ----
   float2 GetBaseUV(V2F inputs) {
       return inputs.sparse_coord.tex_coord * _BaseMap_ST.xy + _BaseMap_ST.zw;
@@ -681,10 +732,11 @@
       float bSlice = floor(sB * 31.0);
       float lutU = bSlice * 0.03125 + sR * 0.0302734375 + 0.00048828125;
       float lutV = sG * 0.96875 + 0.015625;
-      float4 lut0 = textureLod(_ShadowLutTex, float2(lutU, lutV), 0.0);
-      float4 lut1 = textureLod(_ShadowLutTex, float2(lutU + 0.03125, lutV), 0.0);
+      // LUT 资产 sRGBTexture=1 → 补硬件解码 (这是"开 Shadow LUT 全身泛白"的根因)
+      float3 lut0 = SRGBToLinear3(textureLod(_ShadowLutTex, float2(lutU, lutV), 0.0).rgb);
+      float3 lut1 = SRGBToLinear3(textureLod(_ShadowLutTex, float2(lutU + 0.03125, lutV), 0.0).rgb);
       float bFrac = sB * 31.0 - bSlice;
-      return lerp(lut0.rgb, lut1.rgb, bFrac);
+      return lerp(lut0, lut1, bFrac);
   }
 
   // 亮度/饱和度阴影色 (LUT 关闭分支, Cloth/Hair/Fur/Eye 用; Face 的 #else 是纯白, 不走这里)
@@ -784,7 +836,7 @@
       // ---- Normal map ----
       float3 N = SampleBumpNormal(inputs, normalWS_raw, tangentWS, faceSign, _BumpScale);
 
-      // ---- ClearCoat setup (mask = user1.r) ----
+      // ---- ClearCoat setup (mask = user1.r; 通道未填充时回退 HGRP 默认 "white"=1) ----
       float ccMask = 0.0;
       float3 ccN = N;
       float ccPercRough = 1.0;
@@ -792,7 +844,7 @@
       float3 ccF0 = float3(0.0);
       bool ccActive = false;
       if (u_ClearCoat) {
-          ccMask = textureSparse(slot_user1_tex, inputs.sparse_coord).r;
+          ccMask = slot_user1_tex.is_set ? textureSparse(slot_user1_tex, inputs.sparse_coord).r : 1.0;
           ccN = lerp(faceSign * normalize(normalWS_raw), N, _ClearCoatNormalMode);
           ccPercRough = 1.0 - _ClearCoatSmoothness;
           ccAlpha = max(ccPercRough * ccPercRough, 0.0078125);
@@ -845,7 +897,7 @@
           float pxHitH = 0.0;
           bool pxHit = false;
           for (float pxi = 0.0; pxi < pxSteps + 1.0; pxi += 1.0) {
-              float pxTexH = textureGrad(_ParallaxTex, pxUV + pxAccum, pxDxUV, pxDyUV).r;
+              float pxTexH = SRGBToLinear_Custom(textureGrad(_ParallaxTex, pxUV + pxAccum, pxDxUV, pxDyUV).r); // sRGBTexture=1
               if (pxLayerH < pxTexH) { pxHitH = pxTexH; pxHit = true; break; }
               pxPrevOff = pxAccum;
               pxAccum += pxUVDelta;
@@ -857,7 +909,7 @@
           float pxT = (pxPrevH - pxPrevLayerH)
                     / (-pxPrevLayerH + pxLayerH + pxPrevH - pxHitH);
           float2 pxFinalUV = pxUV + pxUVDelta * pxT + pxPrevOff;
-          parallaxSample = texture(_ParallaxTex, pxFinalUV).r;
+          parallaxSample = SRGBToLinear_Custom(texture(_ParallaxTex, pxFinalUV).r); // sRGBTexture=1
       }
 
       // ---- Flat direction ----
@@ -1161,7 +1213,7 @@
 
 //----------------------------------------------------------------------region Part 1 Face — HGRP_CharacterNPR_Skin_Fix.shader computeNPRLighting 逐行移植
 //- {
-  // SDF Mask = user0 通道; SDF Lightmap = 贴图参数 (镜像 UV 采样需任意 UV)。
+  // SDF Mask / SDF Lightmap = 贴图参数 (RGBA 完整 + 镜像 UV 采样需任意 UV)。
   // Face 的 LUT-off 阴影色是"纯白" (shadowLut = oneMinusRefl), 与其他部位不同 — 逐行保留。
   // castShadow: SDF on → 1.0 (HGRP 同); off → shadowAtten=1 [H2] 时 smoothstep(1)=1。
   float3 shadeFace(V2F inputs, float3 positionWS, float3 normalWS_raw, float4 tangentWS, float faceSign, float3 albedo, float baseAlpha) {
@@ -1184,10 +1236,10 @@
       // ---- Normal map ----
       float3 N = SampleBumpNormal(inputs, normalWS_raw, tangentWS, faceSign, _BumpScale);
 
-      // ---- SDF Mask (user0) ----
+      // ---- SDF Mask (sampler 参数, rgba 完整) ----
       float4 sdfMask = float4(1.0, 1.0, 0.0, 0.0);
       if (u_UseSDFLightmap) {
-          sdfMask = textureSparse(slot_user0_tex, inputs.sparse_coord);
+          sdfMask = texture(_SDFMask, uv);
       }
 
       // ---- Flat direction ----
@@ -1200,11 +1252,13 @@
       float3 camFwd = GetCamFwd();
 
       // ---- 脸空间相机向量 (SDF rim gate + skin camGate; 无条件算, 关闭时不消费) ----
-      float3 faceUp = cross(_FaceForward.xyz, _FaceRight.xyz);
+      float3 faceFwd = RotY_FaceAxis(_FaceForward.xyz);   // SP 网格朝向修正
+      float3 faceRight = RotY_FaceAxis(_FaceRight.xyz);
+      float3 faceUp = cross(faceFwd, faceRight);
       float3 camFwdObj = float3(
-          dot(camFwd, _FaceRight.xyz),
+          dot(camFwd, faceRight),
           dot(camFwd, faceUp),
-          dot(camFwd, _FaceForward.xyz)
+          dot(camFwd, faceFwd)
       );
       float camFwdObjLen = rsqrt(max(dot(camFwdObj, camFwdObj), 1.175494e-38));
       camFwdObj *= camFwdObjLen;
@@ -1302,8 +1356,8 @@
       float sdfValue = 0.0;
       float sdfNdotL = 0.0;
       if (u_UseSDFLightmap) {
-          float objLightX = dot(adjustedLightDir, _FaceRight.xyz);
-          float objLightZ = dot(adjustedLightDir, _FaceForward.xyz);
+          float objLightX = dot(adjustedLightDir, faceRight);
+          float objLightZ = dot(adjustedLightDir, faceFwd);
           float objLight_invLen = rsqrt(objLightX * objLightX + NEAR_ZERO_Y * NEAR_ZERO_Y + objLightZ * objLightZ);
           float sdfLightZ = objLight_invLen * objLightZ;
           float lightSide = (objLight_invLen * objLightX > 0.0) ? 1.0 : 0.0;
@@ -1321,7 +1375,7 @@
           float sdfNz = 1.0 - abs(sdfNx);
           float3 sdfFlatN = normalize(float3(sdfNx, NEAR_ZERO_Y, sdfNz));
 
-          float3 sdfNormalWS = normalize(sdfFlatN.x * _FaceRight.xyz + sdfFlatN.y * faceUp + sdfFlatN.z * _FaceForward.xyz);
+          float3 sdfNormalWS = normalize(sdfFlatN.x * faceRight + sdfFlatN.y * faceUp + sdfFlatN.z * faceFwd);
           sdfBlendedN = normalize(lerp(sdfNormalWS, N, sdfMask.y));
 
           float backlitFactor = saturate(camLightDot) * saturate(-sdfLightZ) * (1.0 - _CharacterParams12.x);
@@ -1754,7 +1808,7 @@
           float3 viewN = mat3(uniform_camera_view_matrix) * matcapFullN;
           float viewNLen = rsqrt(dot(viewN, viewN));
           float2 matcapUV = float2(viewN.x * viewNLen * 0.5 + 0.5, viewN.y * viewNLen * 0.5 + 0.5);
-          float4 matcapSmp = texture(_MatcapTex, matcapUV);
+          float4 matcapSmp = SampleSRGBTex(_MatcapTex, matcapUV); // sRGBTexture=1
           float matcapA = matcapSmp.a;
 
           matcapContrib = (matcapSmp.rgb * _MatcapColor.a + matcapA * _MatcapColor.rgb)
@@ -1811,7 +1865,7 @@
 
 //----------------------------------------------------------------------region Part 3 Hair — HGRP_CharacterNPR_Hair_Fix.shader computeNPRLighting 逐行移植
 //- {
-  // Split Normal = user1 通道 (RG=diffuse BA=spec, 裸 [0,1], 不走 DXT5nm); Stroke/Line = 贴图参数。
+  // Split Normal = _SplitNormalMap 贴图参数 (RG=diffuse BA=spec, 裸 [0,1], 不走 DXT5nm); Stroke/Line = 贴图参数。
   // [H11] 皮肤高光的深度边缘检测 → f_HairDepthEdgeMask 直接替代 depthSmooth。
   // 注: HGRP Hair 的 minShadow 不乘 castShadow (charShadow=1 路径), 逐行保留。
   float3 shadeHair(V2F inputs, float3 positionWS, float3 normalWS_raw, float4 tangentWS, float faceSign, float3 albedo, float baseAlpha) {
@@ -1843,7 +1897,7 @@
       float3 N;
       float3 specN;
       if (u_UseSpecBumpMap && u_UseBumpMap) {
-          float4 nrmSmp = textureSparse(slot_user1_tex, inputs.sparse_coord);
+          float4 nrmSmp = texture(_SplitNormalMap, uv);
           float dnRawX = nrmSmp.x * 2.0 - 1.0;
           float dnRawY = nrmSmp.y * 2.0 - 1.0;
           float dnZ = max(sqrt(1.0 - saturate(dnRawX*dnRawX + dnRawY*dnRawY)), 1e-16);
@@ -1857,7 +1911,7 @@
           float snY = snRawY * _SpecBumpScale;
           specN = normalize(snX * tanWS + snY * bitWS + snZ * nrmWS);
       } else if (u_UseBumpMap) {
-          float4 nrmSmp = textureSparse(slot_user1_tex, inputs.sparse_coord);
+          float4 nrmSmp = texture(_SplitNormalMap, uv);
           float dnRawX = nrmSmp.x * 2.0 - 1.0;
           float dnRawY = nrmSmp.y * 2.0 - 1.0;
           float dnZ = max(sqrt(1.0 - saturate(dnRawX*dnRawX + dnRawY*dnRawY)), 1e-16);
@@ -2171,7 +2225,7 @@
 //----------------------------------------------------------------------region Part 4 Fur — HGRP_CharacterNPR_Fur_Fix.shader frag 逐行移植
 //- {
   // [H10] 壳层挤出为顶点级多层网格 (UV1.x=层号), SP 不可能 → f_FurShellIdx 预览单壳层。
-  // FurDirMap = user2; FurMap/FurDyeMap = 贴图参数 (需 ST/偏移采样)。
+  // FurDirMap/FurMap/FurDyeMap = 贴图参数 (RGBA 完整 / 需 ST 偏移采样)。
   // Fur 源没有 Shadow LUT 选项 — 阴影色固定走 亮度/饱和度。
   // 反射: HGRP Fur 用 URP 探针 unity_SpecCube0 → SP 环境 envSampleLOD ([H6])。
   float3 shadeFur(V2F inputs, float3 positionWS, float3 normalWS_raw, float4 tangentWS, float faceSign, float3 albedoIn, out float shellAlphaOut) {
@@ -2194,7 +2248,7 @@
               mad((uv.x - _BaseMap_ST.z) / max(0.001, abs(_BaseMap_ST.x)), _FurDyeMap_ST.x, _FurDyeMap_ST.z),
               mad((uv.y - _BaseMap_ST.w) / max(0.001, abs(_BaseMap_ST.y)), _FurDyeMap_ST.y, _FurDyeMap_ST.w)
           );
-          float3 dyeSmp = texture(_FurDyeMap, dyeUV).rgb;
+          float3 dyeSmp = SRGBToLinear3(texture(_FurDyeMap, dyeUV).rgb); // sRGBTexture=1
           float3 screenBlend = 1.0 - (1.0 - albedo) * (1.0 - dyeSmp);
           albedo = lerp(albedo, screenBlend, _FurDyeIntensity);
       }
@@ -2227,8 +2281,8 @@
           N = faceSign * normalize(normalWS_raw);
       }
 
-      // ---- FurDirMap (user2) ----
-      float4 furDirSmp = textureSparse(slot_user2_tex, inputs.sparse_coord);
+      // ---- FurDirMap (sampler 参数, rgba 完整; HGRP 在 ST 后 uv 采样) ----
+      float4 furDirSmp = SampleSRGBTex(_FurDirMap, uv); // sRGBTexture=1
 
       // ---- FurMap sampling ----
       float furShellNoise = (frac(sin(dot(float2(shellIdx, shellIdx), float2(12.9898, 78.233))) * 43758.5469) * 2.0 - 1.0) * _FurNoise * 0.05;
@@ -2280,14 +2334,14 @@
               mad(mad(_VFXSpecialParam.z, vfxTime, uv.x), _VFXSpecialBlendTex_ST.x, _VFXSpecialBlendTex_ST.z),
               mad(mad(_VFXSpecialParam.w, vfxTime, uv.y), _VFXSpecialBlendTex_ST.y, _VFXSpecialBlendTex_ST.w)
           );
-          vfxBlendSmp = texture(_VFXSpecialBlendTex, vfxBlendUV);
+          vfxBlendSmp = SampleSRGBTex(_VFXSpecialBlendTex, vfxBlendUV); // sRGBTexture=1
 
           float2 vfxDistortUV = uv + vfxBlendSmp.r * _VFXSpecialBlendTexRForDisturb;
           float2 vfxMainUV = float2(
               mad(mad(_VFXSpecialParam.x, vfxTime, vfxDistortUV.x), _VFXSpecialMainTex_ST.x, _VFXSpecialMainTex_ST.z),
               mad(mad(_VFXSpecialParam.y, vfxTime, vfxDistortUV.y), _VFXSpecialMainTex_ST.y, _VFXSpecialMainTex_ST.w)
           );
-          float4 vfxMainSmp = texture(_VFXSpecialMainTex, vfxMainUV);
+          float4 vfxMainSmp = SampleSRGBTex(_VFXSpecialMainTex, vfxMainUV); // sRGBTexture=1
 
           vfxTexAlpha = lerp(vfxMainSmp.a, vfxMainSmp.r, _UseVFXMainTexAsAlpha);
           vfxMainRGB = lerp(vfxMainSmp.rgb, float3(1.0), _UseVFXMainTexAsAlpha);
@@ -2571,7 +2625,7 @@
           float2 disturbUV = ComputeVFXUV(uv0, uv1, _DisturbUVSpeed1,
                                           time, custom1Y, _DisturbUVRotate1,
                                           _VFXDisturbTex_ST, float2(0.0), 0.0);
-          float4 disturbSample = texture(_VFXDisturbTex, disturbUV);
+          float4 disturbSample = SampleSRGBTex(_VFXDisturbTex, disturbUV); // sRGBTexture=1
           float biDisturb = mad(disturbSample.x, 1.0 + _Bi_Disturb, -_Bi_Disturb);
           bool isNormalMode = (0.0 != _DisturbTex1Normal);
           disturb.x = isNormalMode
@@ -2586,7 +2640,7 @@
       float2 mainUV = ComputeVFXUV(uv0, uv1, _MainTexUVSpeed,
                                    time, custom1X, _MainTexUVRotate,
                                    _VFXMainTex_ST, disturb, _MainTexUseDisturb);
-      float4 mainSample = texture(_VFXMainTex, mainUV);
+      float4 mainSample = SampleSRGBTex(_VFXMainTex, mainUV); // sRGBTexture=1
 
       float mainAlpha = lerp(mainSample.a, mainSample.r, _UseMainTexAsAlpha);
       float baseAlpha = vertColor.a * _TintColor.a * _TintColorAlpha * mainAlpha; // _DisableVertColor 语义=白 [H12]
@@ -2598,7 +2652,7 @@
           float2 maskUV = ComputeVFXUV(uv0, uv1, _MaskTexUVSpeed,
                                        time, custom1Y, _MaskTexUVRotate,
                                        _VFXMaskTex_ST, disturb, _MaskTexUseDisturb);
-          float4 maskSample = texture(_VFXMaskTex, maskUV);
+          float4 maskSample = SampleSRGBTex(_VFXMaskTex, maskUV); // sRGBTexture=1
           maskAlpha = lerp(maskSample.a, maskSample.r, _UseMaskTexAsAlpha);
           maskColorFactor = lerp(maskSample.rgb, float3(1.0), _UseMaskTexAsAlpha);
       }
@@ -2614,7 +2668,7 @@
           float2 blendUV = ComputeVFXUV(uv0, uv1, _BlendTexUVSpeed,
                                         time, custom1Y, _BlendTexUVRotate,
                                         _VFXBlendTex_ST, disturb, _BlendTexUseDisturb);
-          float4 blendSample = texture(_VFXBlendTex, blendUV);
+          float4 blendSample = SampleSRGBTex(_VFXBlendTex, blendUV); // sRGBTexture=1
           float blendFactor = saturate((combinedAlpha + blendSample.a) * vertColor.a * _BlendTint.a);
           color += blendFactor * blendSample.rgb * vertColor.rgb * _BlendTint.rgb;
       }
@@ -2706,6 +2760,51 @@
   }
 //- }
 
+//----------------------------------------------------------------------region EndField 后处理 Tonemap (HGRP ACES_modified 1:1)
+//- {
+  // 源: HG lutbuilder2d Sub0_Pass0_Fragment_b4.hlsl L141-166, 经 AzureNihil
+  // Ruri_PostProcess_LutBuilder.shader 的 EndFieldAcesModifiedTonemap 移植, 常量逐字。
+  // 入参 = ACEScg/AP1 线性。输出 = sRGB 基线性 [0,1]。
+  float3 EndfieldAcesModifiedTonemap(float3 acescg) {
+      const float3 ap1LumaWeights = float3(0.2722289860248565673828125, 0.674081981182098388671875, 0.0536894984543323516845703125);
+
+      // 高光去饱和系数 (源 L151: saturate((luma-0.5)*2/3))
+      float highlightDesaturation = saturate((dot(acescg, ap1LumaWeights) - 0.5) * 0.666666686534881591796875);
+
+      // 有理拟合曲线 (源 L152-154)
+      float3 x = acescg;
+      float3 numerator = x * (x * 2.7850849628448486328125 + 0.107772000133991241455078125);
+      float3 denominator = x * (x * 2.9360449314117431640625 + 0.887121975421905517578125) + 0.806888997554779052734375;
+      float3 fitted = min(max(1.0 / denominator, 9.9999997473787516355514526367188e-05) * numerator, 1.0);
+
+      // ODT 去饱和 0.93 (源 L155-159)
+      float fittedLuma = dot(fitted, ap1LumaWeights);
+      float3 desaturated = (fitted - fittedLuma) * 0.930000007152557373046875 + fittedLuma;
+
+      // AP1 → sRGB (源 L160-162, 矩阵常量逐字)
+      float3 srgb;
+      srgb.r = dot(float3(1.70505154132843017578125, -0.621790707111358642578125, -0.083258680999279022216796875), desaturated);
+      srgb.g = dot(float3(-0.13025714457035064697265625, 1.140802860260009765625, -0.010548190213739871978759765625), desaturated);
+      srgb.b = dot(float3(-0.02400326915085315704345703125, -0.128968775272369384765625, 1.15297162532806396484375), desaturated);
+
+      // 高光向归一化色相收敛 (源 L163-166)
+      float maxChannel = max(max(srgb.r, max(srgb.g, srgb.b)), 9.9999997473787516355514526367188e-06);
+      return clamp(lerp(srgb, clamp(srgb / maxChannel, 0.0, 1.0), highlightDesaturation), 0.0, 1.0);
+  }
+
+  // 调色中性时 HG LutBuilder 链 = sRGB线性 → unity_to_ACES→ACEScg (合并即 sRGB_2_AP1)
+  // → ACES_modified 尾段。此矩阵为上面 AP1→sRGB 的精确数值逆 (往返误差 ~1e-16)。
+  float3 ApplyEndfieldTonemap(float3 srgbLinear) {
+      if (!u_UseEndfieldTonemap) return srgbLinear;
+      float3 c = srgbLinear * f_TonemapExposure;
+      float3 acescg;
+      acescg.r = dot(float3(0.6130973255536435, 0.3395228813214228, 0.0473793330068586), c);
+      acescg.g = dot(float3(0.0701942176296659, 0.9163555605787149, 0.0134523438298940), c);
+      acescg.b = dot(float3(0.0206156004863253, 0.1095698373575739, 0.8698151534347436), c);
+      return EndfieldAcesModifiedTonemap(acescg);
+  }
+//- }
+
 //----------------------------------------------------------------------region Shader 入口 — 按 u_CharaPart 分发
 //- {
   void shade(V2F inputs)
@@ -2735,7 +2834,7 @@
                   uvE.x * 0.5 + fracIdx,
                   uvE.y * 0.5 + floor(halfIdx) * 0.5
               );
-              float4 emotionSmp = texture(_EmotionMap, emotionUV);
+              float4 emotionSmp = SampleSRGBTex(_EmotionMap, emotionUV); // sRGBTexture=1
               float emotionT = emotionSmp.a * _EmotionBlend;
               albedo.r = mad(emotionT, emotionSmp.r - baseCol.r * _BaseColor.r, baseCol.r * _BaseColor.r);
               albedo.g = mad(emotionT, emotionSmp.g - baseCol.g * _BaseColor.g, baseCol.g * _BaseColor.g);
@@ -2793,6 +2892,9 @@
           float clipA = baseAlphaTex * _BaseColor.a;
           if (clipA < f_AlphaClip) discard;
       }
+
+      // ---- EndField 后处理 tonemap (HGRP ACES_modified; 屏幕链对所有 part 一致) ----
+      color = ApplyEndfieldTonemap(color);
 
       diffuseShadingOutput(color);
   }
