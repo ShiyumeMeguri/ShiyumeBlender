@@ -22,7 +22,8 @@
   [H2] 主光源屏幕空间阴影：SP 无 → shadowAttenuation=1.0（全亮）。
   [H3] 主光源颜色：UI 参数 v_MainLightColor；方向 = SP 视口主灯 light_main 经 i_LightRotX/Y/Z 旋转。
   [H4] unity_ObjectToWorld：SP 模型即世界（无变换）→ 取单位矩阵；枢轴 originX/Z=0。
-       Face/Hair/Eye 的对象轴 = 世界轴 (1,0,0)/(0,1,0)/(0,0,1)，_FBXRotationFix 仍按原逻辑交换。
+       Face/Hair/Eye 的对象轴 = 世界轴 (1,0,0)/(0,1,0)/(0,0,1)；SP 烘焙网格无需 FBX -90 旋转修正
+       (已删该开关: 它把发丝各向异性轴转错 90°, 致刘海高光环消失)。
        Face SDF 基轴 (源=O2W 列0/列2) 直接由 _FaceRight/_FaceForward 以 SP 世界空间输入
        (±1, rip FBX 实测面朝 -Z ⇒ Unity .mat 轴 Z 取反)，faceUp=cross(right,fwd) 重建列1。
   [H5] ApplyCustomAO（Fix 沙盒自定义 AO）：跳过。
@@ -41,8 +42,10 @@
        f_HairDepthEdgeMask 参数替代 depthSmooth（默认 1=始终生效）。
   [H12] VFX part：SP 无顶点色/UV2/粒子CustomData → vertColor=白、uv1=uv0、custom=0；
        _Time.y → f_VFXTime 手动滑条。混合状态固定 over（无法逐部位换 additive 状态）。
-  [H13] OverlayShadow 是乘法叠帧 pass：SP 输出"乘数颜色"本身作预览（不与底色相乘）。
-       其顶点视空间偏移 _ShadowAngleRange 为顶点级，跳过。
+  [H13] OverlayShadow 眼白阴影是 `Blend Zero SrcColor` 乘法叠帧 pass。SP 无乘帧 → 用 over
+       混合等价逼近：输出阴影染色 _BaseColor.rgb + alpha=变暗权重(texR·a²)，强制半透明
+       (forceAlphaBlend, 否则该材质 _SurfaceType 非透明会被渲成挡眼的白色不透明面片)。
+       眼白 fb≈1 时 over 与真乘法逐像素相等。顶点视空间偏移 _ShadowAngleRange 跳过。
   ====================================================================
 *************************************************************************/
 
@@ -205,12 +208,13 @@
     //- rip FBX 进 SP 实测面朝 -Z: Unity 轴 → SP 轴 = Z 取反 (X/Y 不变), 故默认 (0,0,-1)/(1,0,0)。
     //- 调试: 明暗随光前后扫掠反相 → FaceForward 整体取反; 阴影左右镜像取错边 → FaceRight 整体取反。
     //- 不需要第三个 FaceBack/FaceUp 参数: Up = cross 重建 (源列1, 仅 ~1e-4 权重), Back = -Forward。
-    //: param custom { "default": [0.0, 0.0, -1.0], "label": "脸正面朝向 FaceForward (SP世界轴)", "min": -1.0, "max": 1.0, "group": "A Face" }
+    //- 默认 (0,0,0): 实测该 SP 网格的"上轴"不是世界 Y (疑似 Z-up FBX 导入), 任何真实前向轴
+    //- 都会让 SDF 把光投到错误的水平面 → 正反都糊; (0,0,0) 令 objLightZ≡0 关掉前后扫描,
+    //- SDF 静态居中(不随光平滑扫掠)但不再出错。要恢复平滑需先定准网格真实上/前轴。
+    //: param custom { "default": [0.0, 0.0, 0.0], "label": "脸正面朝向 FaceForward (SP世界轴; 0=关前后SDF扫描)", "min": -1.0, "max": 1.0, "group": "A Face" }
     uniform vec3 _FaceForward;
     //: param custom { "default": [1.0, 0.0, 0.0], "label": "脸右侧朝向 FaceRight (SP世界轴)", "min": -1.0, "max": 1.0, "group": "A Face" }
     uniform vec3 _FaceRight;
-    //: param custom { "default": false, "label": "FBX -90 旋转修正 FBXRotationFix", "group": "A Face" }
-    uniform bool u_FBXRotationFix;
     //: param custom { "default": false, "label": "使用表情贴图 _EMOTION_MAP", "group": "A Face" }
     uniform bool u_UseEmotionMap;
     //: param custom { "default": "", "default_color": [0.0,0.0,0.0,0.0], "label": "表情贴图 EmotionMap (2x2 grid)", "usage": "texture", "group": "A Face" }
@@ -1185,14 +1189,9 @@
   float3 shadeFace(V2F inputs, float3 positionWS, float3 normalWS_raw, float4 tangentWS, float faceSign, float3 albedo, float baseAlpha) {
       float2 uv = GetBaseUV(inputs);
 
-      // ---- Object-to-World ([H4]: 单位矩阵世界轴 + FBX 修正) ----
+      // ---- Object-to-World ([H4]: 单位矩阵世界轴; SP 烘焙网格无需 FBX 旋转修正) ----
       float3 objectRight   = float3(1.0, 0.0, 0.0);
       float3 objectUp      = float3(0.0, 1.0, 0.0);
-      if (u_FBXRotationFix) {
-          float3 tmp = objectRight;
-          objectRight = objectUp;
-          objectUp = -tmp;
-      }
       float originX = 0.0;
       float originZ = 0.0;
 
@@ -1234,7 +1233,8 @@
       );
       float camFwdObjLen = rsqrt(max(dot(camFwdObj, camFwdObj), 1.175494e-38));
       camFwdObj *= camFwdObjLen;
-      float camFwdObj_xz_invLen = rsqrt(camFwdObj.x * camFwdObj.x + camFwdObj.z * camFwdObj.z);
+      // max(): faceFwd=(0,0,0) 退化时 camFwdObj.xz 可能全 0 → 防 rsqrt(0)=Inf→NaN
+      float camFwdObj_xz_invLen = rsqrt(max(camFwdObj.x * camFwdObj.x + camFwdObj.z * camFwdObj.z, 1.175494e-38));
 
       // ---- Flat normal XZ ----
       float3 vertNFlatXZ = float3(N.x, NEAR_ZERO_Y, N.z);
@@ -1675,15 +1675,10 @@
       float3 blendedLightCol = lerp(v_MainLightColor.rgb, _CharacterParams5.xyz, _CharacterParams12.y);
       float lightLum = dot(blendedLightCol, LUM);
 
-      // ---- Object-space light projection ([H4] 单位 o2w + FBX 修正) ----
+      // ---- Object-space light projection ([H4] 单位 o2w; SP 烘焙网格无需 FBX 旋转修正) ----
       float3 _otwC0 = float3(1.0, 0.0, 0.0);
       float3 _otwC1 = float3(0.0, 1.0, 0.0);
       float3 _otwC2 = float3(0.0, 0.0, 1.0);
-      if (u_FBXRotationFix) {
-          float3 tmp = _otwC0;
-          _otwC0 = _otwC1;
-          _otwC1 = -tmp;
-      }
       // HGRP 的 float3x3(C0.x,C1.x,C2.x / C0.y,... / C0.z,...) 行优先填充后, 矩阵的"列"恰为
       // otwC0/C1/C2 (基向量列) — GLSL mat3(v0,v1,v2) 按列构造, 直接传基向量即可得到同一矩阵。
       mat3 o2w3x3 = mat3(_otwC0, _otwC1, _otwC2);
@@ -1904,15 +1899,12 @@
       float fLen = rsqrt(fX*fX + NEAR_ZERO_Y*NEAR_ZERO_Y + fZ*fZ);
       float3 flatDir = float3(fX*fLen, NEAR_ZERO_Y*fLen, fZ*fLen);
 
-      // ---- Anisotropy tangent ([H4] 单位 o2w + FBX 修正) ----
+      // ---- Anisotropy tangent ([H4] 单位 o2w; SP 烘焙网格无需 FBX 旋转修正) ----
+      // 注: FBX -90 修正会把 otwCol1(发丝方向=世界上方 0,1,0) 换成水平 → anisoDir 错 90°
+      //     → 刘海各向异性高光环消失。SP 不需要, 已彻底删除该开关。
       float3 otwCol0 = float3(1.0, 0.0, 0.0);
       float3 otwCol1 = float3(0.0, 1.0, 0.0);
       float3 otwCol2 = float3(0.0, 0.0, 1.0);
-      if (u_FBXRotationFix) {
-          float3 tmp = otwCol0;
-          otwCol0 = otwCol1;
-          otwCol1 = -tmp;
-      }
       float3 anisoDir = normalize(otwCol0 * _AnisotropyDirX + otwCol1);
       float3 anisoBitan = cross(specN, anisoDir);
       float3 blendedBitan = lerp(anisoBitan, tangentWS.xyz, metallic);
@@ -2710,8 +2702,14 @@
 
 //----------------------------------------------------------------------region Part 7 OverlayShadow — HGRP_CharacterNPR_OverlayShadow_Fix.shader 逐行移植
 //- {
-  // [H13] 原版是 Blend Zero SrcColor 的乘法叠帧 pass + 顶点视空间光向偏移。
-  //       SP 输出"乘数颜色"本身做预览; 顶点偏移跳过。
+  // [H13] 原版是 `Blend Zero SrcColor` 的乘法叠帧 pass (+顶点视空间光向偏移, 跳过):
+  //       fb.rgb *= finalColor, 其中 finalColor = lerp(1, blended, finalIntensity)。
+  //   SP 只有 over 混合, 无法直接乘帧。等价改写: over 的 lerp(fb, src, a) 要逼近 fb*乘子。
+  //   令 src = blended(阴影染色), a = finalIntensity(变暗权重):
+  //     over:  fb*(1-a) + blended*a
+  //     真乘:  fb*(1 - a*(1-blended)) = fb*(1-a) + fb*blended*a
+  //   眼白 fb≈1 → 两式相等 (正是本 pass 的目标区域)。无阴影处 texR=0 → a=0 全透,
+  //   不再是挡住眼睛的白片。输出"染色+权重alpha"而非旧版直接吐乘子色。
   float3 shadeOverlayShadow(float3 baseColRGB, float baseAlphaTex, out float outAlpha) {
       float4 tex = float4(baseColRGB, baseAlphaTex);
 
@@ -2723,12 +2721,11 @@
       float alpha = lerp(tex.a, tex.r, _UseGrayAsAlpha);
 
       float shadowAlpha = alpha * _BaseColor.a;
-      float finalIntensity = shadowAlpha * _BaseColor.a;
-      float3 blended = rgb * _BaseColor.rgb;
-      float3 finalColor = 1.0 + finalIntensity * (blended - 1.0);
+      float finalIntensity = shadowAlpha * _BaseColor.a; // 变暗权重 = texR·_BaseColor.a²
+      float3 blended = rgb * _BaseColor.rgb;             // 阴影染色 (UseGrayAsAlpha=1 → _BaseColor.rgb)
 
-      outAlpha = shadowAlpha;
-      return finalColor;
+      outAlpha = finalIntensity;
+      return blended;
   }
 //- }
 
@@ -2794,6 +2791,7 @@
       float3 color = float3(0.0);
       float outAlpha = 1.0;
       bool skipDefaultClip = false;
+      bool forceAlphaBlend = false; // 部位本身就是半透明(如 OverlayShadow 乘法叠帧), 无视 u_AlphaBlend
 
       if (u_CharaPart == 1) {
           // ---- Face: Emotion 混合在进光照前完成 (HGRP Skin frag L687-702) ----
@@ -2844,8 +2842,9 @@
           skipDefaultClip = true;
       }
       else if (u_CharaPart == 7) {
-          // ---- OverlayShadow ([H13] 乘数预览) ----
+          // ---- OverlayShadow ([H13] 乘法叠帧 → over 近似; 强制半透明, 否则白片挡眼) ----
           color = shadeOverlayShadow(baseCol, baseAlphaTex, outAlpha);
+          forceAlphaBlend = true;
           skipDefaultClip = true;
       }
       else {
@@ -2858,7 +2857,7 @@
       }
 
       // ---- Alpha 输出 / 裁切 (与旧版工作流一致) ----
-      if (u_AlphaBlend) {
+      if (u_AlphaBlend || forceAlphaBlend) {
           alphaOutput(outAlpha);
       } else if (!skipDefaultClip) {
           float clipA = baseAlphaTex * _BaseColor.a;
