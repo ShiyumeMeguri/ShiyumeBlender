@@ -38,6 +38,11 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.clear_zero_vgs", icon="GROUP_VERTEX")
 
             layout.separator()
+            layout.label(text="法线贴图烘焙")
+            layout.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
+            layout.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
+
+            layout.separator()
             layout.label(text="渲染与杂项")
             layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
             layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
@@ -195,6 +200,12 @@ class SHIYUME_PT_Shader(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
+
+        col = layout.column(align=True)
+        col.label(text="法线贴图烘焙")
+        col.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
+        col.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
+
         layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
         layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
 
