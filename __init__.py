@@ -1,35 +1,25 @@
 bl_info = {
-    "name": "Shiyume Blender Addon",
-    "author": "Shiyume",
-    "version": (1, 1),
+    "name": "Shiyume Toolkit",
+    "author": "ShiyumeMeguri",
+    "version": (2, 0, 0),
     "blender": (4, 0, 0),
-    "location": "View3D > Sidebar (Shiyume) | Context (W) Menu | Shift+A > Mesh",
-    "description": "Consolidated toolset for modeling, animation, and UVs (Blender 4.x + 5.x)",
+    "location": "View3D > Sidebar (Shiyume) | 右键菜单 | UV 编辑器 | Shift+A > Mesh",
+    "description": "通用建模 / 动画 / UV / 法线 / 烘焙工具库(Blender 4.x + 5.x,NumPy 批量加速)",
     "category": "Object",
 }
 
-import bpy
-from . import ui
-from .operators import animation, shader, uv, mesh, curve, misc, object_ops
+from . import operators, ui
 
-modules = [
-    animation,
-    shader,
-    uv,
-    mesh,
-    curve,
-    misc,
-    object_ops,
-    ui
-]
 
 def register():
-    for mod in modules:
-        mod.register()
+    operators.register()
+    ui.register()
+
 
 def unregister():
-    for mod in reversed(modules):
-        mod.unregister()
+    ui.unregister()
+    operators.unregister()
+
 
 if __name__ == "__main__":
     register()
