@@ -1,269 +1,384 @@
-"""界面:全部由分类表驱动。
-
-一个分类 = 右键菜单里的一个子菜单 + 侧栏里的一个子面板,共用同一份条目表;
-新增分类(如新的 shader 专属家族)只需在 _CATEGORIES 加一行。
-shader 专属功能按引擎/着色器立独立分类(如 EndField),通用功能进通用分类。
-"""
-
 import bpy
 
 
 # ---------------------------------------------------------------------------
-# 分类表
-# ---------------------------------------------------------------------------
-
-class _ToolCategory:
-    """key 生成菜单/面板 idname;modes 控制右键菜单在哪些模式下出现;
-    items 为 (bl_idname, 图标) 序列,None 表示分隔线。"""
-
-    __slots__ = ("key", "label", "icon", "modes", "items")
-
-    def __init__(self, key, label, icon, modes, items):
-        self.key = key
-        self.label = label
-        self.icon = icon
-        self.modes = modes
-        self.items = items
-
-
-_CATEGORIES = (
-    _ToolCategory("animation", "动画", 'ARMATURE_DATA', {'POSE'}, (
-        ("shiyume.clean_animation", 'BRUSH_DATA'),
-        ("shiyume.offset_keyframes", 'ACTION'),
-    )),
-    _ToolCategory("object", "物体", 'OBJECT_DATA', {'OBJECT'}, (
-        ("shiyume.select_by_size", 'RESTRICT_SELECT_OFF'),
-        ("shiyume.arrange_objects", 'GRID'),
-        None,
-        ("shiyume.batch_rename", 'SORTALPHA'),
-        ("shiyume.clear_empty", 'X'),
-    )),
-    _ToolCategory("mesh", "网格", 'EDITMODE_HLT', {'OBJECT', 'EDIT_MESH'}, (
-        ("shiyume.grid_cut", 'MOD_ARRAY'),
-        ("shiyume.topology_cut", 'MESH_GRID'),
-        ("shiyume.weld_by_vertex_group", 'AUTOMERGE_ON'),
-        None,
-        ("shiyume.vertex_color_fill", 'VPAINT_HLT'),
-    )),
-    _ToolCategory("weights", "权重", 'WPAINT_HLT', {'OBJECT', 'EDIT_MESH'}, (
-        ("shiyume.clean_vertex_groups", 'GROUP_VERTEX'),
-        ("shiyume.limit_weights", 'WPAINT_HLT'),
-        ("shiyume.match_weights_active", 'VERTEXSEL'),
-    )),
-    _ToolCategory("normals", "法线", 'NORMALS_VERTEX', {'OBJECT'}, (
-        ("shiyume.smooth_normals", 'MOD_NORMALEDIT'),
-        ("shiyume.uv_normal_compress", 'UV_DATA'),
-        None,
-        ("shiyume.normal_map_to_mesh", 'IMPORT'),
-        ("shiyume.mesh_to_normal_map", 'EXPORT'),
-        None,
-        ("shiyume.outline", 'MOD_SOLIDIFY'),
-    )),
-    _ToolCategory("endfield", "EndField", 'MATERIAL', {'OBJECT'}, (
-        ("shiyume.endfield_hair_dual_normal", 'CURVES'),
-    )),
-    _ToolCategory("uv", "UV", 'UV', {'OBJECT', 'EDIT_MESH'}, (
-        ("shiyume.mesh_uv_morph", 'UV_SYNC_SELECT'),
-        ("shiyume.mesh_uv_morph_stop", 'X'),
-        None,
-        ("shiyume.arrange_uv_islands", 'ALIGN_CENTER'),
-        ("shiyume.uv_pack_lock_group", 'PACKAGE'),
-        None,
-        ("shiyume.prepare_uv_copy", 'COPYDOWN'),
-        ("shiyume.smart_uv_redirect", 'UV_ISLANDSEL'),
-    )),
-    _ToolCategory("curve", "曲线", 'CURVE_DATA', {'OBJECT', 'EDIT_CURVE'}, (
-        ("shiyume.curve_smooth_fix", 'CURVE_DATA'),
-        ("shiyume.curve_to_mesh", 'MESH_DATA'),
-        ("shiyume.mesh_to_curve", 'CURVE_PATH'),
-    )),
-    _ToolCategory("render", "渲染 / 导出", 'RENDER_STILL', {'OBJECT'}, (
-        ("shiyume.render_uv_texture", 'TEXTURE'),
-        ("shiyume.viewport_screenshot", 'RESTRICT_VIEW_OFF'),
-        ("shiyume.batch_bake_textures", 'RENDER_STILL'),
-        None,
-        ("shiyume.modular_export", 'EXPORT'),
-    )),
-    _ToolCategory("generate", "生成", 'MESH_DATA', {'OBJECT'}, (
-        ("shiyume.fractal_fish", 'MESH_DATA'),
-    )),
-)
-
-
-def _draw_items(layout, items):
-    for item in items:
-        if item is None:
-            layout.separator()
-        else:
-            layout.operator(item[0], icon=item[1])
-
-
-def _build_menu(category):
-    def draw(self, context):
-        _draw_items(self.layout, category.items)
-
-    return type(f"SHIYUME_MT_category_{category.key}", (bpy.types.Menu,), {
-        "bl_idname": f"SHIYUME_MT_category_{category.key}",
-        "bl_label": category.label,
-        "draw": draw,
-    })
-
-
-def _build_panel(category):
-    def draw(self, context):
-        _draw_items(self.layout.column(align=True), category.items)
-
-    return type(f"SHIYUME_PT_category_{category.key}", (bpy.types.Panel,), {
-        "bl_idname": f"SHIYUME_PT_category_{category.key}",
-        "bl_label": category.label,
-        "bl_space_type": 'VIEW_3D',
-        "bl_region_type": 'UI',
-        "bl_category": 'Shiyume',
-        "bl_parent_id": "SHIYUME_PT_Sidebar",
-        "bl_options": {'DEFAULT_CLOSED'},
-        "draw": draw,
-    })
-
-
-_CATEGORY_MENUS = tuple(_build_menu(category) for category in _CATEGORIES)
-_CATEGORY_PANELS = tuple(_build_panel(category) for category in _CATEGORIES)
-
-
-# ---------------------------------------------------------------------------
-# 根菜单 / 根面板
+# Right-click context menu (mode-aware)
 # ---------------------------------------------------------------------------
 
 class SHIYUME_MT_Main(bpy.types.Menu):
-    """右键根菜单:按当前模式列出相关分类的子菜单。"""
     bl_label = "Shiyume Tools"
     bl_idname = "SHIYUME_MT_Main"
 
     def draw(self, context):
         layout = self.layout
         mode = context.mode
-        drawn = False
-        for category in _CATEGORIES:
-            if category.modes is None or mode in category.modes:
-                layout.menu(f"SHIYUME_MT_category_{category.key}", icon=category.icon)
-                drawn = True
-        if not drawn:
-            layout.operator("shiyume.batch_rename", icon='SORTALPHA')
-            layout.operator("shiyume.outline", icon='MOD_SOLIDIFY')
-            layout.operator("shiyume.viewport_screenshot", icon='RESTRICT_VIEW_OFF')
+
+        if mode == "POSE":
+            layout.label(text="动画工具")
+            layout.operator("shiyume.fix_all_anim_issues", icon="AUTO")
+            layout.operator("shiyume.animation_offset", icon="ACTION")
+            layout.separator()
+            layout.operator("shiyume.cleanup_bake_frames", icon="X")
+            layout.operator("shiyume.cleanup_bone_loc_scale", icon="GROUP_BONE")
+            layout.operator("shiyume.fix_invalid_anim_paths", icon="LIBRARY_DATA_BROKEN")
+            layout.operator("shiyume.clean_bone_collections", icon="OUTLINER_OB_ARMATURE")
+
+        elif mode == "OBJECT":
+            layout.label(text="选择与布局")
+            layout.operator("shiyume.aabb_select", icon="RESTRICT_SELECT_OFF")
+            layout.operator("shiyume.select_avg_size_half", icon="ZOOM_OUT")
+            layout.operator("shiyume.grid_sort", icon="GRID")
+            layout.operator("shiyume.topology_cut", icon="MESH_GRID")
+            layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
+            layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
+            layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
+            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
+            layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
+            layout.operator("shiyume.clear_empty", icon="X")
+            layout.operator("shiyume.clear_zero_vgs", icon="GROUP_VERTEX")
+
+            layout.separator()
+            layout.label(text="法线贴图烘焙")
+            layout.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
+            layout.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
+
+            layout.separator()
+            layout.label(text="渲染与杂项")
+            layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
+            layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
+            layout.operator("shiyume.uv_render_rt", icon="UV")
+            layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
+            layout.operator("shiyume.modular_export", icon="EXPORT")
+            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
+
+        elif mode in {"EDIT_MESH", "EDIT"}:
+            layout.label(text="网格工具")
+            layout.operator("shiyume.grid_cut", icon="MOD_ARRAY")
+            layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
+            layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
+            layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
+            layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
+            layout.operator("shiyume.clear_zero_vgs", icon="X")
+            layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
+            layout.operator("shiyume.match_weights_active", icon="VERTEXSEL")
+            layout.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
+            layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
+            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
+            layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
+
+        elif mode == "EDIT_CURVE":
+            layout.label(text="曲线工具")
+            layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
+            layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
+            layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
+
+        else:
+            layout.label(text="通用工具")
+            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
+            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
+            layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
 
 
 class SHIYUME_MT_UV(bpy.types.Menu):
-    """UV 编辑器专用菜单(与 3D 视图分类表独立的精选列表)。"""
     bl_label = "Shiyume UV Tools"
     bl_idname = "SHIYUME_MT_UV"
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("shiyume.arrange_uv_islands", icon='ALIGN_CENTER')
-        layout.operator("shiyume.uv_pack_lock_group", icon='PACKAGE')
+        layout.operator("shiyume.uv_pack_lock_group", icon="PACKAGE")
+        layout.operator("shiyume.mesh_uv_sync", icon="UV_DATA")
+        layout.operator("shiyume.mesh_uv_sync_live", icon="UV_SYNC_SELECT")
+        layout.operator("shiyume.mesh_uv_sync_live_disable", icon="X")
+        layout.operator(
+            "shiyume.mesh_to_uv", icon="MESH_UVSPHERE", text="Mesh to UV (网格转UV)"
+        )
+        layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
+        layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
+        layout.operator("shiyume.uv_render_rt", icon="RENDERLAYERS")
         layout.separator()
-        layout.operator("shiyume.mesh_uv_morph", icon='UV_SYNC_SELECT')
-        layout.operator("shiyume.mesh_uv_morph_stop", icon='X')
-        layout.separator()
-        layout.operator("shiyume.prepare_uv_copy", icon='COPYDOWN')
-        layout.operator("shiyume.smart_uv_redirect", icon='UV_ISLANDSEL')
-        layout.operator("shiyume.render_uv_texture", icon='RENDERLAYERS')
+        layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
+        layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
 
+
+def menu_func(self, context):
+    self.layout.menu("SHIYUME_MT_Main")
+
+
+def menu_func_uv(self, context):
+    self.layout.separator()
+    self.layout.menu("SHIYUME_MT_UV", icon="MODIFIER")
+
+
+def menu_func_mesh_add(self, context):
+    """Add 'Fractal Fish' under Shift+A > Mesh."""
+    self.layout.separator()
+    self.layout.operator("shiyume.fractal_fish", icon="MESH_DATA", text="Fractal Fish (分形鱼)")
+
+
+# ---------------------------------------------------------------------------
+# Sidebar panel (View3D > N > Shiyume)
+# ---------------------------------------------------------------------------
 
 class SHIYUME_PT_Sidebar(bpy.types.Panel):
-    """侧栏根面板:分类子面板的挂载点。"""
-    bl_label = "Shiyume Toolkit"
+    """Main Shiyume sidebar panel exposing every operator categorised."""
+    bl_label = "Shiyume Tools"
     bl_idname = "SHIYUME_PT_Sidebar"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Shiyume'
 
     def draw(self, context):
-        pass
+        layout = self.layout
+        layout.label(text=f"Mode: {context.mode}", icon='OPTIONS')
 
 
-def _menu_main(self, context):
-    self.layout.menu("SHIYUME_MT_Main")
+class SHIYUME_PT_Animation(bpy.types.Panel):
+    bl_label = "动画"
+    bl_idname = "SHIYUME_PT_Animation"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.fix_all_anim_issues", icon="AUTO")
+        layout.operator("shiyume.animation_offset", icon="ACTION")
+        layout.separator()
+        layout.operator("shiyume.cleanup_bake_frames", icon="X")
+        layout.operator("shiyume.cleanup_bone_loc_scale", icon="GROUP_BONE")
+        layout.operator("shiyume.fix_invalid_anim_paths", icon="LIBRARY_DATA_BROKEN")
+        layout.operator("shiyume.clean_bone_collections", icon="OUTLINER_OB_ARMATURE")
 
 
-def _menu_uv(self, context):
-    self.layout.separator()
-    self.layout.menu("SHIYUME_MT_UV", icon='MODIFIER')
+class SHIYUME_PT_Mesh(bpy.types.Panel):
+    bl_label = "网格"
+    bl_idname = "SHIYUME_PT_Mesh"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+
+        col = layout.column(align=True)
+        col.label(text="选择/布局")
+        col.operator("shiyume.aabb_select", icon="RESTRICT_SELECT_OFF")
+        col.operator("shiyume.select_avg_size_half", icon="ZOOM_OUT")
+        col.operator("shiyume.grid_sort", icon="GRID")
+
+        col = layout.column(align=True)
+        col.label(text="拓扑/剪切")
+        col.operator("shiyume.grid_cut", icon="MOD_ARRAY")
+        col.operator("shiyume.topology_cut", icon="MESH_GRID")
+
+        col = layout.column(align=True)
+        col.label(text="顶点组/权重")
+        col.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
+        col.operator("shiyume.clear_zero_vgs", icon="X")
+        col.operator("shiyume.weight_prune", icon="WPAINT_HLT")
+        col.operator("shiyume.match_weights_active", icon="VERTEXSEL")
+        col.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
+
+        col = layout.column(align=True)
+        col.label(text="重命名")
+        col.operator("shiyume.batch_rename", icon="SORTALPHA")
 
 
-def _menu_mesh_add(self, context):
-    self.layout.separator()
-    self.layout.operator("shiyume.fractal_fish", icon='MESH_DATA', text="Fractal Fish (分形鱼)")
+class SHIYUME_PT_Shader(bpy.types.Panel):
+    bl_label = "着色 / 烘焙"
+    bl_idname = "SHIYUME_PT_Shader"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
+
+        col = layout.column(align=True)
+        col.label(text="法线贴图烘焙")
+        col.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
+        col.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
+
+        layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
+        layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
 
 
-# ---------------------------------------------------------------------------
-# 注册
-# ---------------------------------------------------------------------------
+class SHIYUME_PT_UV(bpy.types.Panel):
+    bl_label = "UV"
+    bl_idname = "SHIYUME_PT_UV"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
 
-_CLASSES = (
-    SHIYUME_MT_Main,
-    SHIYUME_MT_UV,
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.uv_pack_lock_group", icon="PACKAGE")
+        layout.operator("shiyume.mesh_uv_sync", icon="UV_DATA")
+        layout.operator("shiyume.mesh_uv_sync_live", icon="UV_SYNC_SELECT")
+        layout.operator("shiyume.mesh_uv_sync_live_disable", icon="X")
+        layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
+        layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
+        layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
+        layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
+        layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+
+
+class SHIYUME_PT_Curve(bpy.types.Panel):
+    bl_label = "曲线"
+    bl_idname = "SHIYUME_PT_Curve"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
+        layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
+        layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
+
+
+class SHIYUME_PT_Render(bpy.types.Panel):
+    bl_label = "渲染 / 导出"
+    bl_idname = "SHIYUME_PT_Render"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
+        layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
+        layout.operator("shiyume.uv_render_rt", icon="RENDERLAYERS")
+        layout.operator("shiyume.modular_export", icon="EXPORT")
+
+
+class SHIYUME_PT_Misc(bpy.types.Panel):
+    bl_label = "杂项"
+    bl_idname = "SHIYUME_PT_Misc"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
+        layout.operator("shiyume.clear_empty", icon="X")
+        layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
+
+
+_PANEL_CLASSES = (
     SHIYUME_PT_Sidebar,
-) + _CATEGORY_MENUS + _CATEGORY_PANELS
-
-_CONTEXT_MENUS = (
-    "VIEW3D_MT_object_context_menu",
-    "VIEW3D_MT_edit_mesh_context_menu",
-    "VIEW3D_MT_edit_mesh_specials",
-    "VIEW3D_MT_pose_context_menu",
-    "VIEW3D_MT_pose_specials",
-    "VIEW3D_MT_edit_curve_context_menu",
-    "VIEW3D_MT_edit_curve_specials",
-    "VIEW3D_MT_armature_context_menu",
-    "VIEW3D_MT_armature_specials",
+    SHIYUME_PT_Animation,
+    SHIYUME_PT_Mesh,
+    SHIYUME_PT_Shader,
+    SHIYUME_PT_UV,
+    SHIYUME_PT_Curve,
+    SHIYUME_PT_Render,
+    SHIYUME_PT_Misc,
 )
 
-_UV_MENUS = (
-    "IMAGE_MT_uv_context_menu",
-    "IMAGE_MT_uvs_context_menu",
-    "IMAGE_MT_uv_specials",
-)
 
+# ---------------------------------------------------------------------------
+# Register
+# ---------------------------------------------------------------------------
 
 def register():
-    for cls in _CLASSES:
+    bpy.utils.register_class(SHIYUME_MT_Main)
+    bpy.utils.register_class(SHIYUME_MT_UV)
+
+    for cls in _PANEL_CLASSES:
         bpy.utils.register_class(cls)
 
-    for menu_name in _CONTEXT_MENUS:
-        if hasattr(bpy.types, menu_name):
-            getattr(bpy.types, menu_name).prepend(_menu_main)
+    # Target all possible specials/context menus with prepend like LoopTools
+    targets = [
+        "VIEW3D_MT_object_context_menu",
+        "VIEW3D_MT_edit_mesh_context_menu",
+        "VIEW3D_MT_edit_mesh_specials",
+        "VIEW3D_MT_pose_context_menu",
+        "VIEW3D_MT_pose_specials",
+        "VIEW3D_MT_edit_curve_context_menu",
+        "VIEW3D_MT_edit_curve_specials",
+        "VIEW3D_MT_armature_context_menu",
+        "VIEW3D_MT_armature_specials",
+    ]
 
-    for menu_name in _UV_MENUS:
-        if hasattr(bpy.types, menu_name):
-            getattr(bpy.types, menu_name).prepend(_menu_uv)
+    for t in targets:
+        if hasattr(bpy.types, t):
+            getattr(bpy.types, t).prepend(menu_func)
 
+    # UV Editor menus
+    uv_targets = [
+        "IMAGE_MT_uv_context_menu",
+        "IMAGE_MT_uvs_context_menu",
+        "IMAGE_MT_uv_specials",
+    ]
+
+    for t in uv_targets:
+        if hasattr(bpy.types, t):
+            getattr(bpy.types, t).prepend(menu_func_uv)
+
+    # Shift+A > Mesh menu (where built-in Cube/Plane/etc live) -> add Fractal Fish
     if hasattr(bpy.types, "VIEW3D_MT_mesh_add"):
-        bpy.types.VIEW3D_MT_mesh_add.append(_menu_mesh_add)
+        bpy.types.VIEW3D_MT_mesh_add.append(menu_func_mesh_add)
 
 
 def unregister():
-    for menu_name in _CONTEXT_MENUS:
-        if hasattr(bpy.types, menu_name):
+    targets = [
+        "VIEW3D_MT_object_context_menu",
+        "VIEW3D_MT_edit_mesh_context_menu",
+        "VIEW3D_MT_edit_mesh_specials",
+        "VIEW3D_MT_pose_context_menu",
+        "VIEW3D_MT_pose_specials",
+        "VIEW3D_MT_edit_curve_context_menu",
+        "VIEW3D_MT_edit_curve_specials",
+        "VIEW3D_MT_armature_context_menu",
+        "VIEW3D_MT_armature_specials",
+    ]
+    for t in targets:
+        if hasattr(bpy.types, t):
             try:
-                getattr(bpy.types, menu_name).remove(_menu_main)
+                getattr(bpy.types, t).remove(menu_func)
             except Exception:
                 pass
 
-    for menu_name in _UV_MENUS:
-        if hasattr(bpy.types, menu_name):
+    uv_targets = [
+        "IMAGE_MT_uv_context_menu",
+        "IMAGE_MT_uvs_context_menu",
+        "IMAGE_MT_uv_specials",
+    ]
+    for t in uv_targets:
+        if hasattr(bpy.types, t):
             try:
-                getattr(bpy.types, menu_name).remove(_menu_uv)
+                getattr(bpy.types, t).remove(menu_func_uv)
             except Exception:
                 pass
 
     if hasattr(bpy.types, "VIEW3D_MT_mesh_add"):
         try:
-            bpy.types.VIEW3D_MT_mesh_add.remove(_menu_mesh_add)
+            bpy.types.VIEW3D_MT_mesh_add.remove(menu_func_mesh_add)
         except Exception:
             pass
 
-    for cls in reversed(_CLASSES):
+    for cls in reversed(_PANEL_CLASSES):
         try:
             bpy.utils.unregister_class(cls)
-        except RuntimeError:
+        except Exception:
             pass
+
+    bpy.utils.unregister_class(SHIYUME_MT_Main)
+    bpy.utils.unregister_class(SHIYUME_MT_UV)
