@@ -1,18 +1,21 @@
-"""编辑模式一键接骨架链：tail 对齐子骨骼 head + use_connect，并把既有姿态/动画补偿回原样。
+"""编辑模式修骨骼朝向：移植自 better_fbx 的 Automatic Bone Orientation。
 
-对标 better_fbx 的 Automatic Bone Orientation，差别：真正设 use_connect、多子骨骼按名字链/最远
-子骨骼挑主链而不是无脑取平均、roll 用最小扭转保住原轴向、叶骨默认只改朝向不改长度、
-可对已经导进来的骨架随时重跑。
+算法逐行照抄 better_fbx importer.py:770-803（tail 取子骨骼 head 平均、叶骨沿父链续、
+1e-3 零长度兜底、可选 calculate_roll），差别只有三处：
+① 能对已经导进来的骨架随时重跑，不必重新导入；
+② 单子骨骼链额外勾上 use_connect（多子骨骼一律不连，朝向本来就是猜的）；
+③ 静置朝向变了会让既有姿态/动作错位，这里把它们换算回原样（对应 better_fbx 导入时的 CorrectPose）。
 """
 
-import re
-
 import bpy
-from mathutils import Euler, Matrix, Quaternion, Vector
+from mathutils import Euler, Quaternion, Vector
 
 from ._compat import list_action_fcurves, new_fcurve
 
-_DIGIT_GROUP = re.compile(r"\d+")
+_LEAF_BONE_SCALE = {'Long': 1.0, 'Short': 0.1}
+
+# better_fbx importer.py:790 的零长度判据
+_MINIMUM_LENGTH = 1e-3
 
 _CHANNEL_SIZE = {
     'location': 3,
@@ -31,19 +34,6 @@ _EULER_ORDERS = {'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX'}
 _IDENTITY_TOLERANCE = 1e-6
 
 
-def _successor_names(name):
-    """名字链后继候选：任一数字段 +1（保留零填充宽度）；整个名字没有数字时退化为追加 1。"""
-    candidates = set()
-    for match in _DIGIT_GROUP.finditer(name):
-        raw = match.group()
-        incremented = str(int(raw) + 1)
-        for text in (incremented.zfill(len(raw)), incremented):
-            candidates.add(name[:match.start()] + text + name[match.end():])
-    if not candidates:
-        candidates.update(name + suffix for suffix in ("1", "01", "_1", "_01"))
-    return candidates
-
-
 def _is_identity(matrix):
     for row in range(4):
         for column in range(4):
@@ -53,42 +43,17 @@ def _is_identity(matrix):
     return True
 
 
-def _plan_chain_tail(bone, strategy):
-    """返回 (新 tail 坐标, 作为主链下一节的子骨骼)；子骨骼为 None 表示不产生连接。"""
+def _plan_tail(bone, leaf_scale):
+    """better_fbx importer.py:777-788：有子骨骼取其 head 平均，叶骨沿父→自己方向续，根叶骨不动。"""
     children = bone.children
-    if not children:
-        return None, None
-    if len(children) == 1:
-        return children[0].head.copy(), children[0]
-    if strategy == 'SKIP':
-        return None, None
-    if strategy == 'AVERAGE':
+    if len(children) > 0:
         point = Vector((0.0, 0.0, 0.0))
         for child in children:
             point += child.head
-        return point / len(children), None
-
-    successors = _successor_names(bone.name)
-    for child in children:
-        if child.name in successors:
-            return child.head.copy(), child
-    if strategy == 'NAME':
-        return None, None
-    child = max(children, key=lambda candidate: (candidate.head - bone.head).length_squared)
-    return child.head.copy(), child
-
-
-def _plan_leaf_tail(bone, mode, ratio):
-    """叶骨没有子骨骼可指，沿着父骨骼→自己的方向续出去。"""
-    if mode == 'SKIP' or bone.parent is None:
-        return None
-    direction = bone.head - bone.parent.head
-    if direction.length < 1e-9:
-        return None
-    length = (bone.tail - bone.head).length if mode == 'KEEP' else direction.length * ratio
-    if length < 1e-9:
-        return None
-    return bone.head + direction.normalized() * length
+        return point / len(children)
+    if bone.parent:
+        return bone.head + (bone.head - bone.parent.head) * leaf_scale
+    return bone.tail.copy()
 
 
 def _prepare_correction(correction):
@@ -102,7 +67,8 @@ def _transform_channel(channel, values, prepared, rotation_mode, previous):
     """把一组通道值搬进新的静置空间。
 
     静置矩阵从 R 改成 R' 后，要让蒙皮形变与世界姿态都不变，局部姿态必须做共轭：
-    B' = K⁻¹ B K，K = R⁻¹R'。位移与旋转互不耦合，缩放（均匀时）不变，所以可以逐通道算。
+    B' = K⁻¹ B K，K = R⁻¹R'。位移与旋转互不耦合，均匀缩放不变，所以可以逐通道算。
+    这与 better_fbx importer.py:1048-1052 的 CorrectPose（旋转轴、角度不变）是同一件事。
     返回 (新值, 供下一帧做连续性判断的对象)。
     """
     inverse_basis, inverse_offset, forward, backward = prepared
@@ -121,7 +87,6 @@ def _transform_channel(channel, values, prepared, rotation_mode, previous):
         result = rotated.to_euler(order, previous if previous is not None else Euler((0.0, 0.0, 0.0), order))
         return list(result), result
 
-    # 轴角：共轭只旋转轴、不动角度
     axis = Vector(values[1:])
     if axis.length < 1e-9:
         return list(values), None
@@ -133,8 +98,7 @@ def _is_neutral_pose(pose_bone, rotation_channel):
     if pose_bone.location.length > 1e-9:
         return False
     if rotation_channel == 'rotation_quaternion':
-        quaternion = pose_bone.rotation_quaternion
-        return 1.0 - abs(quaternion.w) < 1e-9
+        return 1.0 - abs(pose_bone.rotation_quaternion.w) < 1e-9
     if rotation_channel == 'rotation_axis_angle':
         return abs(pose_bone.rotation_axis_angle[0]) < 1e-9
     return max(abs(value) for value in pose_bone.rotation_euler) < 1e-9
@@ -155,14 +119,14 @@ def _write_curve(fcurve, times, values):
     fcurve.update()
 
 
-class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
-    """一键接骨架链：把每根骨骼的 tail 拉到主链子骨骼的 head 上并勾选"连接"，
-    叶骨沿父链方向续出去，roll 用最小扭转保住原来的轴向。
-    专治别的软件导进来朝向丢失（手骨全朝上）、父子关系断开的骨架。
-    head 一律不动，蒙皮绑定不受影响；既有姿态与本骨架用到的动作会被补偿回原样。
+class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
+    """自动骨骼朝向：把每根骨骼的 tail 指向子骨骼（多个子骨骼取其 head 平均），
+    叶骨沿父链方向续出去，专治别的软件导进来朝向丢失、骨头全朝一个方向的骨架。
+    只有单子骨骼的一级链会额外勾上"连接"，多子骨骼不连。
+    head 一律不动，蒙皮绑定不受影响；既有姿态与本骨架用到的动作会被换算回原样。
     编辑模式下有选中骨骼就只处理选中的，没选中就处理整副骨架。"""
-    bl_idname = "shiyume.connect_bone_chains"
-    bl_label = "一键接骨架链"
+    bl_idname = "shiyume.auto_bone_orientation"
+    bl_label = "自动骨骼朝向"
     bl_options = {'REGISTER', 'UNDO'}
 
     scope: bpy.props.EnumProperty(
@@ -174,45 +138,32 @@ class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
         ],
         default='AUTO',
     )
-    multi_child_strategy: bpy.props.EnumProperty(
-        name="多子骨骼",
+    leaf_bone: bpy.props.EnumProperty(
+        name="叶骨长度",
         items=[
-            ('NAME_FARTHEST', "名字链→最远", "先找名字递增的子骨骼，找不到就取离自己最远的那根"),
-            ('NAME', "仅名字链", "只认名字递增的子骨骼，认不出就不动这根骨骼"),
-            ('AVERAGE', "取平均", "tail 指向所有子骨骼 head 的平均位置（better_fbx 的做法，不产生连接）"),
-            ('SKIP', "跳过", "多个子骨骼时完全不动这根骨骼"),
+            ('Long', "Long", "父骨长度的 1/1"),
+            ('Short', "Short", "父骨长度的 1/10"),
         ],
-        default='NAME_FARTHEST',
+        default='Long',
     )
-    leaf_mode: bpy.props.EnumProperty(
-        name="叶骨",
-        items=[
-            ('KEEP', "只改朝向", "保留叶骨原长度，只把方向掰回父链方向"),
-            ('RATIO', "按父骨比例", "长度 = 父骨长度 × 比例"),
-            ('SKIP', "不动", "叶骨保持原样"),
-        ],
-        default='KEEP',
+    calculate_roll: bpy.props.EnumProperty(
+        name="重算 roll",
+        description="改完朝向后按指定轴重算骨骼 roll；None 表示不动 roll",
+        items=[(value, value, value) for value in (
+            'None', 'POS_X', 'POS_Z', 'GLOBAL_POS_X', 'GLOBAL_POS_Y', 'GLOBAL_POS_Z',
+            'NEG_X', 'NEG_Z', 'GLOBAL_NEG_X', 'GLOBAL_NEG_Y', 'GLOBAL_NEG_Z', 'ACTIVE', 'VIEW', 'CURSOR',
+        )],
+        default='None',
     )
-    leaf_length_ratio: bpy.props.FloatProperty(name="叶骨长度比例", default=1.0, min=0.001, max=10.0)
-    preserve_roll: bpy.props.BoolProperty(
-        name="保住轴向(roll)",
-        description="改朝向后用最小扭转把 Z 轴拉回原方向，而不是重算成全局轴",
-        default=True,
-    )
-    set_connect: bpy.props.BoolProperty(
-        name="勾选连接",
-        description="给主链子骨骼打上 use_connect；关掉就只修朝向不建立连接",
+    connect_single_chains: bpy.props.BoolProperty(
+        name="连接单子骨骼链",
+        description="只有一个子骨骼时 tail 正好落在子 head 上，给它勾上连接；多子骨骼一律不连",
         default=True,
     )
     preserve_animation: bpy.props.BoolProperty(
         name="补偿姿态与动画",
         description="静置朝向变了会让既有姿态/动作曲线错位，勾上会把它们换算回原来的效果",
         default=True,
-    )
-    minimum_length: bpy.props.FloatProperty(
-        name="最短骨骼长度",
-        description="目标点离 head 比这还近就跳过，避免造出零长度骨骼",
-        default=0.0001, min=0.0, precision=6,
     )
 
     @classmethod
@@ -224,50 +175,52 @@ class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
         obj = context.active_object
         edit_bones = obj.data.edit_bones
 
-        original = {bone.name: (bone.matrix.copy(), bone.z_axis.copy()) for bone in edit_bones}
+        original = {bone.name: bone.matrix.copy() for bone in edit_bones}
+        selection = {bone.name: bone.select for bone in edit_bones}
 
-        targets = self._collect_targets(edit_bones)
+        targets = self._collect_targets(edit_bones, selection)
         if not targets:
             self.report({'WARNING'}, "没有可处理的骨骼")
             return {'CANCELLED'}
 
-        planned = {}
-        chain_children = {}
-        for bone in targets:
-            if bone.children:
-                point, child = _plan_chain_tail(bone, self.multi_child_strategy)
-                if child is not None:
-                    chain_children[bone.name] = child.name
-            else:
-                point = _plan_leaf_tail(bone, self.leaf_mode, self.leaf_length_ratio)
-            if point is not None:
-                planned[bone.name] = point
+        leaf_scale = _LEAF_BONE_SCALE[self.leaf_bone]
+        planned = {bone.name: _plan_tail(bone, leaf_scale) for bone in targets}
 
         oriented = 0
-        degenerate = 0
+        shortened = 0
         for name, point in planned.items():
             bone = edit_bones[name]
-            if (point - bone.head).length < self.minimum_length:
-                degenerate += 1
-                chain_children.pop(name, None)
-                continue
-            bone.tail = point
-            if self.preserve_roll:
-                bone.align_roll(original[name][1])
-            oriented += 1
+            previous_tail = bone.tail.copy()
+            if (point - bone.head).length > _MINIMUM_LENGTH:
+                bone.tail = point
+            else:
+                # better_fbx 原式 `head + matrix @ Vector((0,1,0)) * 0.01` 会把 head 一起缩放
+                # （mathutils 的 4x4 @ 3D 向量带平移），这里按其"造一根极短骨骼"的本意写
+                bone.tail = bone.head + bone.y_axis * 0.01
+                shortened += 1
+            if (bone.tail - previous_tail).length > 1e-9:
+                oriented += 1
+
+        if self.calculate_roll != 'None':
+            for bone in edit_bones:
+                bone.select = bone.name in planned
+            bpy.ops.armature.calculate_roll(type=self.calculate_roll)
+            for bone in edit_bones:
+                bone.select = selection[bone.name]
 
         connected = 0
         kept_loose = 0
-        if self.set_connect:
+        if self.connect_single_chains:
             # 连上之后这根骨骼的 location 通道就彻底失效了，有位移在用的一律不连
             live_locations = self._live_location_bones(obj) if self.preserve_animation else set()
-            for parent_name, child_name in chain_children.items():
-                parent = edit_bones[parent_name]
-                child = edit_bones[child_name]
-                # head 落不到父 tail 上就不连，否则 Blender 会拖着 head 走、毁掉蒙皮绑定
-                if (child.head - parent.tail).length > 1e-6 or child.use_connect:
+            for name in planned:
+                bone = edit_bones[name]
+                if len(bone.children) != 1:
                     continue
-                if child_name in live_locations:
+                child = bone.children[0]
+                if child.use_connect or (child.head - bone.tail).length > 1e-6:
+                    continue
+                if child.name in live_locations:
                     kept_loose += 1
                     continue
                 child.use_connect = True
@@ -275,7 +228,7 @@ class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
 
         corrections = {}
         for bone in edit_bones:
-            change = original[bone.name][0].inverted_safe() @ bone.matrix
+            change = original[bone.name].inverted_safe() @ bone.matrix
             if not _is_identity(change):
                 corrections[bone.name] = change
 
@@ -284,35 +237,21 @@ class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
         if self.preserve_animation and corrections:
             compensated_bones, compensated_curves = self._compensate(obj, corrections)
 
-        message = f"接链 {connected} 处，改朝向 {oriented} 根"
+        message = f"改朝向 {oriented} 根，接单链 {connected} 处"
         if kept_loose:
             message += f"，{kept_loose} 处有位移动画未连接"
-        if degenerate:
-            message += f"，跳过零长度 {degenerate} 根"
+        if shortened:
+            message += f"，{shortened} 根退化成极短骨骼"
         if compensated_bones or compensated_curves:
             message += f"，补偿姿态 {compensated_bones} 根 / 曲线 {compensated_curves} 条"
         self.report({'INFO'}, message)
         return {'FINISHED'}
 
-    def _collect_targets(self, edit_bones):
-        selected = [bone for bone in edit_bones if bone.select]
+    def _collect_targets(self, edit_bones, selection):
+        selected = [bone for bone in edit_bones if selection[bone.name]]
         if self.scope == 'ALL' or (self.scope == 'AUTO' and not selected):
             return list(edit_bones)
         return selected
-
-    def _compensate(self, obj, corrections):
-        animated = {}
-        curves = 0
-        for action in self._actions_driving(obj):
-            curves += self._compensate_action(action, corrections, obj.pose, animated)
-
-        pending = self._plan_static(obj, corrections, animated)
-        if pending:
-            bpy.ops.object.mode_set(mode='OBJECT')
-            for name, attribute, values in pending:
-                setattr(obj.pose.bones[name], attribute, values)
-            bpy.ops.object.mode_set(mode='EDIT')
-        return len({name for name, _attribute, _values in pending}), curves
 
     def _live_location_bones(self, obj):
         """location 通道真的在用的骨骼：静态位移非零，或动作里有非零位移关键帧。"""
@@ -339,6 +278,20 @@ class SHIYUME_OT_ConnectBoneChains(bpy.types.Operator):
                 if strip.action is not None:
                     actions.add(strip.action)
         return actions
+
+    def _compensate(self, obj, corrections):
+        animated = {}
+        curves = 0
+        for action in self._actions_driving(obj):
+            curves += self._compensate_action(action, corrections, obj.pose, animated)
+
+        pending = self._plan_static(obj, corrections, animated)
+        if pending:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            for name, attribute, values in pending:
+                setattr(obj.pose.bones[name], attribute, values)
+            bpy.ops.object.mode_set(mode='EDIT')
+        return len({name for name, _attribute, _values in pending}), curves
 
     def _compensate_action(self, action, corrections, pose, animated):
         groups = {}

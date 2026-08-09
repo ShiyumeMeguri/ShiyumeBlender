@@ -5,7 +5,7 @@ from . import cleanup_bake
 from . import cleanup_transforms
 from . import fix_paths
 from . import clean_bone_collections
-from . import connect_bone_chains
+from . import auto_bone_orientation
 
 classes = (
     offset_keyframes.SHIYUME_OT_AnimationOffset,
@@ -14,7 +14,7 @@ classes = (
     cleanup_transforms.SHIYUME_OT_CleanupSelectedBoneLocScale,
     fix_paths.SHIYUME_OT_FixInvalidAnimPaths,
     clean_bone_collections.SHIYUME_OT_CleanBoneCollections,
-    connect_bone_chains.SHIYUME_OT_ConnectBoneChains,
+    auto_bone_orientation.SHIYUME_OT_AutoBoneOrientation,
 )
 
 def register():
