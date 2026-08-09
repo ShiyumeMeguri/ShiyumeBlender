@@ -45,6 +45,11 @@ def remove_fcurve(owner, fcurve):
     owner.remove(fcurve)
 
 
+def new_fcurve(owner, data_path, index):
+    """Create an fcurve on ``owner`` (either API: legacy's extra args have defaults)."""
+    return owner.new(data_path, index=index)
+
+
 def get_active_action(obj):
     """Return the active action on ``obj`` or None."""
     if obj is None:

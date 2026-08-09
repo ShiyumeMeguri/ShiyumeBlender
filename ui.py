@@ -68,6 +68,11 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
             layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
 
+        elif mode == "EDIT_ARMATURE":
+            layout.label(text="骨架工具")
+            layout.operator("shiyume.connect_bone_chains", icon="CONSTRAINT_BONE")
+            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
+
         elif mode == "EDIT_CURVE":
             layout.label(text="曲线工具")
             layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
@@ -145,6 +150,8 @@ class SHIYUME_PT_Animation(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        layout.operator("shiyume.connect_bone_chains", icon="CONSTRAINT_BONE")
+        layout.separator()
         layout.operator("shiyume.fix_all_anim_issues", icon="AUTO")
         layout.operator("shiyume.animation_offset", icon="ACTION")
         layout.separator()
