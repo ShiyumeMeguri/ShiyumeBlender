@@ -10,6 +10,7 @@ from . import select_avg_size_half
 from . import vg_smooth_merge
 from . import match_weights_active
 from . import clear_zero_vgs
+from . import pair_weights
 
 classes = (
     aabb_select.SHIYUME_OT_AABBSelect,
@@ -23,6 +24,8 @@ classes = (
     vg_smooth_merge.SHIYUME_OT_VGSmoothMerge,
     match_weights_active.SHIYUME_OT_MatchWeightsActive,
     clear_zero_vgs.SHIYUME_OT_ClearZeroVertexGroups,
+    pair_weights.SHIYUME_OT_SwapVertexWeights,
+    pair_weights.SHIYUME_OT_CopyVertexWeights,
 )
 
 

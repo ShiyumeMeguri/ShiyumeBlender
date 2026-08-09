@@ -61,6 +61,8 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.clear_zero_vgs", icon="X")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
             layout.operator("shiyume.match_weights_active", icon="VERTEXSEL")
+            layout.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
+            layout.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
             layout.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
             layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
             layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
@@ -181,6 +183,8 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
         col.operator("shiyume.clear_zero_vgs", icon="X")
         col.operator("shiyume.weight_prune", icon="WPAINT_HLT")
         col.operator("shiyume.match_weights_active", icon="VERTEXSEL")
+        col.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
+        col.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
         col.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
 
         col = layout.column(align=True)
