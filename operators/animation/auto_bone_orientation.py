@@ -1,10 +1,14 @@
-"""编辑模式修骨骼朝向：移植自 better_fbx 的 Automatic Bone Orientation。
+"""编辑模式修单骨骼链朝向：只碰方向能唯一确定的骨骼，别的一律不动。
 
-算法逐行照抄 better_fbx importer.py:770-803（tail 取子骨骼 head 平均、叶骨沿父链续、
-1e-3 零长度兜底、可选 calculate_roll），差别只有三处：
-① 能对已经导进来的骨架随时重跑，不必重新导入；
-② 单子骨骼链额外勾上 use_connect（多子骨骼一律不连，朝向本来就是猜的）；
-③ 静置朝向变了会让既有姿态/动作错位，这里把它们换算回原样（对应 better_fbx 导入时的 CorrectPose）。
+处理范围严格限定在单骨骼链上：
+- 恰好一个子骨骼 → tail 拉到子骨骼 head，并勾上连接；
+- 单链末端（自己没有子骨骼、父骨骼也只有自己这一个子骨骼）→ 沿"父 head → 自己 head"的方向
+  延伸，长度保持原样；
+- 多子骨骼、孤立骨骼（父骨骼有多个子骨骼且自己没有子骨骼）→ 一根都不动，它们的朝向本来
+  就是猜的，猜出来的东西不该固化成结构。
+
+静置朝向变了会让既有姿态/动作错位，这里把它们换算回原样，对应 better_fbx 导入时的 CorrectPose
+（better_fbx importer.py:1048-1052）。
 """
 
 import bpy
@@ -12,9 +16,7 @@ from mathutils import Euler, Quaternion, Vector
 
 from ._compat import list_action_fcurves, new_fcurve
 
-_LEAF_BONE_SCALE = {'Long': 1.0, 'Short': 0.1}
-
-# better_fbx importer.py:790 的零长度判据
+# 方向定不下来的判据，沿用 better_fbx importer.py:790 的取值
 _MINIMUM_LENGTH = 1e-3
 
 _CHANNEL_SIZE = {
@@ -43,17 +45,23 @@ def _is_identity(matrix):
     return True
 
 
-def _plan_tail(bone, leaf_scale):
-    """better_fbx importer.py:777-788：有子骨骼取其 head 平均，叶骨沿父→自己方向续，根叶骨不动。"""
+def _plan_tail(bone):
+    """算这根骨骼的新 tail；返回 None 表示方向定不下来或不属于单骨骼链，不该动它。"""
     children = bone.children
-    if len(children) > 0:
-        point = Vector((0.0, 0.0, 0.0))
-        for child in children:
-            point += child.head
-        return point / len(children)
-    if bone.parent:
-        return bone.head + (bone.head - bone.parent.head) * leaf_scale
-    return bone.tail.copy()
+    if len(children) > 1:
+        return None
+    if len(children) == 1:
+        point = children[0].head.copy()
+        return point if (point - bone.head).length > _MINIMUM_LENGTH else None
+
+    parent = bone.parent
+    if parent is None or len(parent.children) != 1:
+        return None
+    direction = bone.head - parent.head
+    length = (bone.tail - bone.head).length
+    if direction.length <= _MINIMUM_LENGTH or length < 1e-9:
+        return None
+    return bone.head + direction.normalized() * length
 
 
 def _prepare_correction(correction):
@@ -68,7 +76,6 @@ def _transform_channel(channel, values, prepared, rotation_mode, previous):
 
     静置矩阵从 R 改成 R' 后，要让蒙皮形变与世界姿态都不变，局部姿态必须做共轭：
     B' = K⁻¹ B K，K = R⁻¹R'。位移与旋转互不耦合，均匀缩放不变，所以可以逐通道算。
-    这与 better_fbx importer.py:1048-1052 的 CorrectPose（旋转轴、角度不变）是同一件事。
     返回 (新值, 供下一帧做连续性判断的对象)。
     """
     inverse_basis, inverse_offset, forward, backward = prepared
@@ -120,13 +127,13 @@ def _write_curve(fcurve, times, values):
 
 
 class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
-    """自动骨骼朝向：把每根骨骼的 tail 指向子骨骼（多个子骨骼取其 head 平均），
-    叶骨沿父链方向续出去，专治别的软件导进来朝向丢失、骨头全朝一个方向的骨架。
-    只有单子骨骼的一级链会额外勾上"连接"，多子骨骼不连。
+    """修单骨骼链朝向：只有一个子骨骼的骨骼把 tail 拉到子骨骼 head 上并勾上连接，
+    链条末端沿上一段的方向延伸、长度不变。
+    多子骨骼和孤立骨骼一根都不动——它们的朝向没法唯一确定。
     head 一律不动，蒙皮绑定不受影响；既有姿态与本骨架用到的动作会被换算回原样。
     编辑模式下有选中骨骼就只处理选中的，没选中就处理整副骨架。"""
     bl_idname = "shiyume.auto_bone_orientation"
-    bl_label = "自动骨骼朝向"
+    bl_label = "修单骨骼链朝向"
     bl_options = {'REGISTER', 'UNDO'}
 
     scope: bpy.props.EnumProperty(
@@ -138,14 +145,6 @@ class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
         ],
         default='AUTO',
     )
-    leaf_bone: bpy.props.EnumProperty(
-        name="叶骨长度",
-        items=[
-            ('Long', "Long", "父骨长度的 1/1"),
-            ('Short', "Short", "父骨长度的 1/10"),
-        ],
-        default='Long',
-    )
     calculate_roll: bpy.props.EnumProperty(
         name="重算 roll",
         description="改完朝向后按指定轴重算骨骼 roll；None 表示不动 roll",
@@ -156,8 +155,8 @@ class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
         default='None',
     )
     connect_single_chains: bpy.props.BoolProperty(
-        name="连接单子骨骼链",
-        description="只有一个子骨骼时 tail 正好落在子 head 上，给它勾上连接；多子骨骼一律不连",
+        name="勾上连接",
+        description="tail 落到子骨骼 head 上之后给子骨骼打上 use_connect",
         default=True,
     )
     preserve_animation: bpy.props.BoolProperty(
@@ -183,22 +182,17 @@ class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
             self.report({'WARNING'}, "没有可处理的骨骼")
             return {'CANCELLED'}
 
-        leaf_scale = _LEAF_BONE_SCALE[self.leaf_bone]
-        planned = {bone.name: _plan_tail(bone, leaf_scale) for bone in targets}
+        planned = {}
+        for bone in targets:
+            point = _plan_tail(bone)
+            if point is not None:
+                planned[bone.name] = point
 
         oriented = 0
-        shortened = 0
         for name, point in planned.items():
             bone = edit_bones[name]
-            previous_tail = bone.tail.copy()
-            if (point - bone.head).length > _MINIMUM_LENGTH:
+            if (bone.tail - point).length > 1e-9:
                 bone.tail = point
-            else:
-                # better_fbx 原式 `head + matrix @ Vector((0,1,0)) * 0.01` 会把 head 一起缩放
-                # （mathutils 的 4x4 @ 3D 向量带平移），这里按其"造一根极短骨骼"的本意写
-                bone.tail = bone.head + bone.y_axis * 0.01
-                shortened += 1
-            if (bone.tail - previous_tail).length > 1e-9:
                 oriented += 1
 
         if self.calculate_roll != 'None':
@@ -237,11 +231,9 @@ class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
         if self.preserve_animation and corrections:
             compensated_bones, compensated_curves = self._compensate(obj, corrections)
 
-        message = f"改朝向 {oriented} 根，接单链 {connected} 处"
+        message = f"改朝向 {oriented} 根，接链 {connected} 处，未参与 {len(targets) - len(planned)} 根"
         if kept_loose:
             message += f"，{kept_loose} 处有位移动画未连接"
-        if shortened:
-            message += f"，{shortened} 根退化成极短骨骼"
         if compensated_bones or compensated_curves:
             message += f"，补偿姿态 {compensated_bones} 根 / 曲线 {compensated_curves} 条"
         self.report({'INFO'}, message)
