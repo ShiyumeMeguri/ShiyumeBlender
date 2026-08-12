@@ -1,5 +1,4 @@
 import bpy
-from . import viewport_render
 from . import viewport_simple
 from . import normal_expansion
 from . import normal_map_to_mesh
@@ -8,7 +7,6 @@ from . import vertex_color_rgba
 from . import batch_bake
 
 classes = (
-    viewport_render.SHIYUME_OT_RenderViewportAsTexture,
     viewport_simple.SHIYUME_OT_ViewportSimpleRender,
     normal_expansion.SHIYUME_OT_NormalExpansion,
     normal_map_to_mesh.SHIYUME_OT_NormalMapToMesh,

@@ -30,8 +30,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.grid_sort", icon="GRID")
             layout.operator("shiyume.topology_cut", icon="MESH_GRID")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
-            layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
-            layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
             layout.operator("shiyume.batch_rename", icon="SORTALPHA")
             layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
             layout.operator("shiyume.clear_empty", icon="X")
@@ -44,9 +42,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
 
             layout.separator()
             layout.label(text="渲染与杂项")
-            layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
             layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
-            layout.operator("shiyume.uv_render_rt", icon="UV")
             layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
             layout.operator("shiyume.modular_export", icon="EXPORT")
             layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
@@ -55,8 +51,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.label(text="网格工具")
             layout.operator("shiyume.grid_cut", icon="MOD_ARRAY")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
-            layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
-            layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
             layout.operator("shiyume.clear_zero_vgs", icon="X")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
@@ -83,7 +77,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.label(text="通用工具")
             layout.operator("shiyume.batch_rename", icon="SORTALPHA")
             layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
-            layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
 
 
 class SHIYUME_MT_UV(bpy.types.Menu):
@@ -99,9 +92,7 @@ class SHIYUME_MT_UV(bpy.types.Menu):
         layout.operator(
             "shiyume.mesh_to_uv", icon="MESH_UVSPHERE", text="Mesh to UV (网格转UV)"
         )
-        layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
-        layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
-        layout.operator("shiyume.uv_render_rt", icon="RENDERLAYERS")
+        layout.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT")
         layout.separator()
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
@@ -237,10 +228,68 @@ class SHIYUME_PT_UV(bpy.types.Panel):
         layout.operator("shiyume.mesh_uv_sync_live", icon="UV_SYNC_SELECT")
         layout.operator("shiyume.mesh_uv_sync_live_disable", icon="X")
         layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
-        layout.operator("shiyume.prepare_uv_copy", icon="COPYDOWN")
-        layout.operator("shiyume.smart_uv_redirect", icon="UV_ISLANDSEL")
+        layout.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT")
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+
+
+class SHIYUME_PT_UVTransfer(bpy.types.Panel):
+    """UV 重定向：源 UV 上的贴图 → 目标 UV 的排布。"""
+    bl_label = "UV 重定向"
+    bl_idname = "SHIYUME_PT_UVTransfer"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+    bl_parent_id = "SHIYUME_PT_Sidebar"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.shiyume_uv_transfer
+        obj = context.active_object
+
+        if obj is None or obj.type != 'MESH':
+            layout.label(text="请激活一个网格物体", icon='INFO')
+            return
+
+        col = layout.column(align=True)
+        col.label(text="在网格上编辑 UV 布局")
+        col.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE", text="展平为网格")
+        col.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT", text="网格坐标写回UV")
+
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.prop_search(settings, "source_uv", obj.data, "uv_layers",
+                        text="源 UV", icon='UV_DATA')
+        col.prop_search(settings, "target_uv", obj.data, "uv_layers",
+                        text="目标 UV", icon='UV_ISLANDSEL')
+
+        layout.prop(settings, "color_source", expand=True)
+
+        col = layout.column(align=True)
+        col.prop(settings, "resolution")
+        col.prop(settings, "margin")
+        if settings.color_source == 'IMAGE':
+            col.prop(settings, "supersample")
+            col.prop(settings, "extension")
+        else:
+            col.prop(settings, "bake_type")
+            col.prop(settings, "bake_samples")
+
+        layout.prop(settings, "apply_to_object")
+
+        col = layout.column(align=True)
+        col.prop(settings, "save_to_disk")
+        sub = col.column(align=True)
+        sub.enabled = settings.save_to_disk
+        sub.prop(settings, "output_dir", text="")
+
+        layout.operator("shiyume.uv_transfer", icon='TEXTURE')
 
 
 class SHIYUME_PT_Curve(bpy.types.Panel):
@@ -270,9 +319,7 @@ class SHIYUME_PT_Render(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("shiyume.render_viewport_texture", icon="TEXTURE")
         layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
-        layout.operator("shiyume.uv_render_rt", icon="RENDERLAYERS")
         layout.operator("shiyume.modular_export", icon="EXPORT")
 
 
@@ -298,6 +345,7 @@ _PANEL_CLASSES = (
     SHIYUME_PT_Mesh,
     SHIYUME_PT_Shader,
     SHIYUME_PT_UV,
+    SHIYUME_PT_UVTransfer,
     SHIYUME_PT_Curve,
     SHIYUME_PT_Render,
     SHIYUME_PT_Misc,

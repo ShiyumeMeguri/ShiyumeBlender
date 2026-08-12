@@ -2,6 +2,9 @@ import bpy
 import bmesh
 from mathutils import Vector
 
+# 展平物体上记录来源物体名的自定义属性，供「网格坐标写回UV」按此回程
+SOURCE_OBJECT_PROP = "shiyume_uv_source"
+
 
 class SHIYUME_OT_MeshToUV(bpy.types.Operator):
     """创建一个新的网格对象，并完整保留原物体的网格数据。
@@ -65,6 +68,7 @@ class SHIYUME_OT_MeshToUV(bpy.types.Operator):
         new_mesh_data = source_obj.data.copy()
         new_mesh_data.name = source_obj.data.name + "_UV_Shape"
         new_obj = bpy.data.objects.new(source_obj.name + "_UV_Shape", new_mesh_data)
+        new_obj[SOURCE_OBJECT_PROP] = source_obj.name
         context.collection.objects.link(new_obj)
 
         # 2. Split UV island borders on the duplicate and record which source vertex
