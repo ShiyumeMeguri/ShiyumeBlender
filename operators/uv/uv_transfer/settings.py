@@ -73,8 +73,8 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
         name="应用到物体",
         default=True,
         description=(
-            "完成后把新贴图接回材质，删除源 UV 层并把目标层改名为源层名"
-            "（名字不变，所有按名绑定的节点自动继续生效）"
+            "完成后把新贴图接回材质，并对调两个 UV 层的数据："
+            "源层拿到新布局、目标层接住旧布局。两层都保留，再执行一次即可换回"
         ),
     )
     save_to_disk: bpy.props.BoolProperty(
