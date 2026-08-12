@@ -21,7 +21,7 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
              "正交顶视相机。改网格就是改排布，修改器与形态键都算数"),
             ('UV_LAYER', "目标 UV 层", "直接用另一个 UV 层作为新排布"),
         ],
-        default='MESH_XY',
+        default='UV_LAYER',
     )
     source_uv: bpy.props.StringProperty(
         name="源 UV",

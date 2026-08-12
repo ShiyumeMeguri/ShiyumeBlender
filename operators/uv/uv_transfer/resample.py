@@ -68,15 +68,11 @@ def _group_by_workload(job, image_slots):
     return groups
 
 
-def _gather_triangles(job, cache, slots):
+def _gather_triangles(job, slots):
     target_parts = []
     source_parts = []
     for entry_index, slot_index in sorted(slots):
-        if entry_index not in cache:
-            entry = job.entries[entry_index]
-            cache[entry_index] = mesh_bind.triangles_by_material(
-                entry.mesh, job.source_uv, entry.loop_uv)
-        pair = cache[entry_index].get(slot_index)
+        pair = job.entries[entry_index].triangles.get(slot_index)
         if pair is None:
             continue
         target_parts.append(pair[0])
@@ -153,10 +149,9 @@ def run(job):
 
     outputs = {}
     overlapped = 0
-    triangle_cache = {}
 
     for (slots, width, height), images in _group_by_workload(job, image_slots).items():
-        target_triangles, source_triangles = _gather_triangles(job, triangle_cache, slots)
+        target_triangles, source_triangles = _gather_triangles(job, slots)
         if target_triangles is None:
             continue
         for batch in _memory_batches(images, _SOURCE_MEMORY_BUDGET):

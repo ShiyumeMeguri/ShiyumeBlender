@@ -49,12 +49,15 @@ def _unique_materials(job):
 
 
 def _add_layout_uv(job):
-    """把解析好的排布灌进临时 UV 层，返回被改动的网格列表。"""
+    """把解析好的排布灌进临时 UV 层，返回 (被改动的网格, 灌不进去的物体名)。"""
     touched = []
+    rejected = []
     for entry in job.entries:
-        if layout.write_uv_layer(entry.mesh, _BAKE_UV_NAME, entry.loop_uv):
+        if layout.write_uv_layer(entry.mesh, _BAKE_UV_NAME, entry.base_loop_uv):
             touched.append(entry.mesh)
-    return touched
+        else:
+            rejected.append(entry.obj.name)
+    return touched, rejected
 
 
 def _remove_layout_uv(meshes):
@@ -153,9 +156,15 @@ def run(job):
         f"{job.entries[0].obj.name}_Bake", job.output_directory)
     image = image_bind.create(name, width, height, use_float=False)
 
+    touched, rejected = _add_layout_uv(job)
+    if rejected:
+        _remove_layout_uv(touched)
+        job.error(f"烘焙要把排布写成 UV 层，但这些物体的修改器改变了拓扑: "
+                  f"{', '.join(rejected)} —— 先应用修改器，或改用「重采样贴图」")
+        return None
+
     state = _capture_scene(scene)
     created = _add_bake_targets(materials, image)
-    touched = _add_layout_uv(job)
     try:
         _configure_scene(scene, settings)
 

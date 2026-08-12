@@ -55,16 +55,17 @@ class SHIYUME_OT_UVFromMesh(bpy.types.Operator):
             self.report({'ERROR'}, f"'{obj.name}' 的来源物体 '{origin_name}' 已不存在")
             return False
 
-        loop_uv = layout.resolve_loop_uv(context, obj, _WorldProjection())
-        if loop_uv is None:
+        settings = context.scene.shiyume_uv_transfer
+        resolved = layout.resolve(context, obj, _WorldProjection(settings.source_uv))
+        if resolved is None or resolved.base_loop_uv is None:
             self.report({'ERROR'},
                         f"'{obj.name}' 的修改器改变了拓扑，无法逐 loop 对应")
             return False
 
-        if not layout.write_uv_layer(origin.data, layer_name, loop_uv):
+        if not layout.write_uv_layer(origin.data, layer_name, resolved.base_loop_uv):
             self.report(
                 {'ERROR'},
-                f"'{obj.name}' 有 {loop_uv.shape[0]} 个循环，"
+                f"'{obj.name}' 有 {resolved.base_loop_uv.shape[0]} 个循环，"
                 f"来源 '{origin_name}' 有 {len(origin.data.loops)} 个，对不上")
             return False
         return True
@@ -72,4 +73,8 @@ class SHIYUME_OT_UVFromMesh(bpy.types.Operator):
 
 class _WorldProjection:
     """本算子恒定走世界投影，用最小的形状喂给 layout。"""
+
     target_space = 'MESH_XY'
+
+    def __init__(self, source_uv):
+        self.source_uv = source_uv

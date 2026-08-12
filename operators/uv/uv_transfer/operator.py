@@ -14,12 +14,13 @@ from .layout import SOURCE_OBJECT_PROP
 
 
 class Entry:
-    """一个参与重定向的物体，以及它解析好的每 loop 目标坐标。"""
+    """一个参与重定向的物体，以及它解析好的目标排布。"""
 
-    def __init__(self, obj, loop_uv):
+    def __init__(self, obj, resolved):
         self.obj = obj
         self.mesh = obj.data
-        self.loop_uv = loop_uv
+        self.triangles = resolved.triangles
+        self.base_loop_uv = resolved.base_loop_uv
 
 
 class TransferJob:
@@ -80,10 +81,10 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
             self.report({'ERROR'}, "输出目录是相对路径，请先保存 .blend 或改用绝对路径")
             return {'CANCELLED'}
 
-        entries, skipped = self._collect(context, settings)
+        entries, notes = self._collect(context, settings)
         if not entries:
             self.report({'ERROR'}, "选中物体里没有可用的网格 — " + (
-                "; ".join(skipped) if skipped else "请选中网格物体"))
+                "; ".join(notes) if notes else "请选中网格物体"))
             return {'CANCELLED'}
 
         job = TransferJob(self, context, entries)
@@ -108,32 +109,33 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
         if saved:
             message += f"，已写入 {settings.output_dir}"
         self.report({'INFO'}, message)
-        for note in skipped:
+        for note in notes:
             self.report({'WARNING'}, note)
         return {'FINISHED'}
 
     def _collect(self, context, settings):
         """逐个选中网格解析目标排布；解析不了的显式说明原因。"""
         entries = []
-        skipped = []
+        notes = []
         for obj in context.selected_objects:
             if obj.type != 'MESH':
                 continue
             if settings.source_uv not in obj.data.uv_layers:
-                skipped.append(f"'{obj.name}' 没有源 UV 层 '{settings.source_uv}'，已跳过")
+                notes.append(f"'{obj.name}' 没有源 UV 层 '{settings.source_uv}'，已跳过")
                 continue
 
-            loop_uv = layout.resolve_loop_uv(context, obj, settings)
-            if loop_uv is None:
-                if settings.target_space == 'UV_LAYER':
-                    skipped.append(
-                        f"'{obj.name}' 没有目标 UV 层 '{settings.target_uv}'，已跳过")
-                else:
-                    skipped.append(
-                        f"'{obj.name}' 的修改器改变了拓扑，无法逐 loop 对应，已跳过")
+            resolved = layout.resolve(context, obj, settings)
+            if resolved is None:
+                notes.append(f"'{obj.name}' 没有目标 UV 层 '{settings.target_uv}'，已跳过")
                 continue
-            entries.append(Entry(obj, loop_uv))
-        return entries, skipped
+            if (settings.target_space == 'MESH_XY'
+                    and SOURCE_OBJECT_PROP not in obj):
+                notes.append(
+                    f"'{obj.name}' 不是「网格转UV」生成的展平物体，"
+                    f"世界投影拿到的是模型本身的俯视轮廓；"
+                    f"要按 UV 层重定向请把「目标排布」切成「目标 UV 层」")
+            entries.append(Entry(obj, resolved))
+        return entries, notes
 
     def _restore_selection(self, context, selection, active):
         bpy.ops.object.select_all(action='DESELECT')
@@ -154,12 +156,16 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
         """把这次用的排布写成目标 UV 层，再与源层对调，让模型直接用上新排布。"""
         landed = set()
         for entry in job.entries:
+            if entry.base_loop_uv is None:
+                job.warn(f"'{entry.obj.name}' 的修改器改变了拓扑，"
+                         f"排布无法落回 UV 层；贴图已出，UV 请手动处理")
+                continue
             mesh = self._destination_mesh(job, entry, settings)
             if mesh is None or mesh.name in landed:
                 continue
             landed.add(mesh.name)
 
-            if not layout.write_uv_layer(mesh, settings.target_uv, entry.loop_uv):
+            if not layout.write_uv_layer(mesh, settings.target_uv, entry.base_loop_uv):
                 job.warn(f"'{mesh.name}' 的循环数与投影结果不符，排布未落地")
                 continue
             self._swap_uv_layers(mesh, settings.source_uv, settings.target_uv)
@@ -178,7 +184,7 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
         if origin is None or origin.type != 'MESH':
             job.warn(f"'{entry.obj.name}' 的来源物体 '{origin_name}' 已不存在")
             return None
-        if len(origin.data.loops) != entry.loop_uv.shape[0]:
+        if len(origin.data.loops) != entry.base_loop_uv.shape[0]:
             job.warn(f"'{entry.obj.name}' 与来源 '{origin_name}' 的循环数不符")
             return None
         return origin.data
