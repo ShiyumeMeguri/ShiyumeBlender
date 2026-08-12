@@ -5,9 +5,12 @@ Image.pixels 给出的是该图色彩空间解码后的值（sRGB 图 → 线性
 """
 
 import os
+import re
 
 import bpy
 import numpy as np
+
+_RUN_INDEX = re.compile(r"_\d{3}$")
 
 
 def read_rgba(image):
@@ -21,22 +24,40 @@ def read_rgba(image):
 
 
 def output_name(source_image, suffix="_Retarget"):
-    """由源图名推导输出名，重复执行不会叠加后缀。"""
+    """由源图名推导输出名基底；反复重定向不会把后缀和序号叠成一串。"""
     base = os.path.splitext(source_image.name)[0]
-    while base.endswith(suffix):
-        base = base[: -len(suffix)]
+    shrinking = True
+    while shrinking:
+        shrinking = False
+        stripped = _RUN_INDEX.sub("", base)
+        if stripped != base:
+            base = stripped
+            shrinking = True
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            shrinking = True
     return base + suffix
 
 
-def create(name, width, height, use_float=False, colorspace='sRGB'):
-    """建立（或复用）指定规格的图像数据块；规格不符时重建。"""
-    existing = bpy.data.images.get(name)
-    if existing is not None:
-        if tuple(existing.size) == (width, height) and existing.is_float == use_float:
-            existing.colorspace_settings.name = colorspace
-            return existing
-        bpy.data.images.remove(existing)
+def unique_name(base, directory=None):
+    """挑一个还没被占用的名字——已有的数据块与磁盘文件都不覆盖。"""
+    resolved = bpy.path.abspath(directory) if directory else None
 
+    def taken(name):
+        if name in bpy.data.images:
+            return True
+        return bool(resolved) and os.path.exists(os.path.join(resolved, name + ".png"))
+
+    if not taken(base):
+        return base
+    index = 1
+    while taken(f"{base}_{index:03d}"):
+        index += 1
+    return f"{base}_{index:03d}"
+
+
+def create(name, width, height, use_float=False, colorspace='sRGB'):
+    """按指定规格新建图像数据块；名字须由 unique_name 挑过，这里不做覆盖。"""
     image = bpy.data.images.new(
         name, width=width, height=height, alpha=True, float_buffer=use_float,
     )

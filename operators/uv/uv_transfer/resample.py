@@ -133,8 +133,9 @@ def _transfer(job, batch, target_triangles, source_triangles, width, height, out
         planar = rgba.reshape(height, width, 4)
         kernel.dilate_edges(planar, covered.reshape(height, width), settings.margin)
 
-        output = image_bind.create_output(
-            image_bind.output_name(image), width, height, image)
+        name = image_bind.unique_name(
+            image_bind.output_name(image), job.output_directory)
+        output = image_bind.create_output(name, width, height, image)
         image_bind.write_rgba(output, planar)
         outputs[image] = output
 

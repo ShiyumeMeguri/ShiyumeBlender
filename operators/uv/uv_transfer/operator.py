@@ -4,6 +4,7 @@
 """
 
 import bpy
+import numpy as np
 
 from . import image_bind
 from . import providers
@@ -20,6 +21,9 @@ class TransferJob:
         self.objects = objects
         self.source_uv = self.settings.source_uv
         self.target_uv = self.settings.target_uv
+        # 要写盘时命名还得避开磁盘上已有的文件，不写盘就只避开数据块
+        self.output_directory = (self.settings.output_dir
+                                 if self.settings.save_to_disk else None)
         self.failed = False
 
     def warn(self, message):
@@ -81,7 +85,7 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
         saved = self._save(result['outputs'], settings)
         if settings.apply_to_object:
             source.apply(job, result)
-            self._finalize_uv(meshes, settings.source_uv, settings.target_uv)
+            self._swap_uv_layers(meshes, settings.source_uv, settings.target_uv)
 
         message = f"{source.label}完成 — {len(result['outputs'])} 张贴图"
         if saved:
@@ -121,17 +125,23 @@ class SHIYUME_OT_UVTransfer(bpy.types.Operator):
             return []
         return [image_bind.save(image, settings.output_dir) for image in outputs]
 
-    def _finalize_uv(self, meshes, source_uv, target_uv):
-        """删掉源 UV 层，并把目标层改名为源层名——按名绑定的节点因此原样继续生效。"""
+    def _swap_uv_layers(self, meshes, source_uv, target_uv):
+        """对调两层的 UV 数据：源层拿到新布局，目标层接住旧布局。
+
+        两个层、两个名字都原样保留——按名绑定的节点继续生效，槽位顺序不变，
+        旧布局也还在，再执行一次就换回去。
+        """
         for mesh in meshes.values():
-            layers = mesh.uv_layers
-            source_layer = layers.get(source_uv)
-            if source_layer is None or layers.get(target_uv) is None:
+            source_attribute = mesh.attributes.get(source_uv)
+            target_attribute = mesh.attributes.get(target_uv)
+            if source_attribute is None or target_attribute is None:
                 continue
-            layers.remove(source_layer)
-            target_layer = layers.get(target_uv)
-            if target_layer is None:
-                continue
-            target_layer.name = source_uv
-            target_layer.active_render = True
-            layers.active = target_layer
+
+            count = len(source_attribute.data) * 2
+            source_values = np.empty(count, dtype=np.float32)
+            target_values = np.empty(count, dtype=np.float32)
+            source_attribute.data.foreach_get("vector", source_values)
+            target_attribute.data.foreach_get("vector", target_values)
+            source_attribute.data.foreach_set("vector", target_values)
+            target_attribute.data.foreach_set("vector", source_values)
+            mesh.update()

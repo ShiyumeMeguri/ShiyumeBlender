@@ -127,8 +127,9 @@ def run(job):
         job.error("选中网格上没有使用节点的材质，无法烘焙")
         return None
 
-    image = image_bind.create(
-        f"{job.objects[0].name}_Bake", width, height, use_float=False)
+    name = image_bind.unique_name(
+        f"{job.objects[0].name}_Bake", job.output_directory)
+    image = image_bind.create(name, width, height, use_float=False)
 
     state = _capture_scene(scene)
     created = _add_bake_targets(materials, image)
