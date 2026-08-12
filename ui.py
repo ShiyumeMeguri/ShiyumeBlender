@@ -243,11 +243,18 @@ class SHIYUME_PT_UVTransfer(bpy.types.Panel):
 
         layout.separator()
 
+        layout.prop(settings, "target_space", text="")
+
         col = layout.column(align=True)
         col.prop_search(settings, "source_uv", obj.data, "uv_layers",
                         text="源 UV", icon='UV_DATA')
-        col.prop_search(settings, "target_uv", obj.data, "uv_layers",
-                        text="目标 UV", icon='UV_ISLANDSEL')
+        target_text = ("目标 UV" if settings.target_space == 'UV_LAYER'
+                       else "投影写入")
+        row = col.row(align=True)
+        row.enabled = (settings.target_space == 'UV_LAYER'
+                       or settings.apply_to_object)
+        row.prop_search(settings, "target_uv", obj.data, "uv_layers",
+                        text=target_text, icon='UV_ISLANDSEL')
 
         layout.prop(settings, "color_source", expand=True)
 

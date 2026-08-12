@@ -1,17 +1,23 @@
-"""BAKE 颜色源：用 Cycles 把材质的最终着色结果烘焙到目标 UV 排布。
+"""BAKE 颜色源：用 Cycles 把材质的最终着色结果烘焙到目标排布。
 
 与 IMAGE 源的区别在于它取的是着色器算完的颜色（含程序化节点、光照），
-因此能重定向"最终颜色"而不只是某一张已有贴图。边缘外扩交给 Cycles 自己的
-bake margin——它基于烘焙器自身的覆盖信息，不该由外部再猜一遍。
+因此能重定向"最终颜色"而不只是某一张已有贴图。
+
+排布来自 layout 模块。MESH_XY 时先把世界 XY 灌进一个临时 UV 层再烘——那正是
+正交顶视相机做的投影，与旧的相机出图等价；差别只在于烘焙是逐纹素求值，
+不经画面合成，所以边缘不会带上背景色。边缘外扩交给 Cycles 自己的 bake margin，
+它基于烘焙器自身的覆盖信息，不该由外部再猜一遍。
 """
 
 import bpy
 
 from . import graph_bind
 from . import image_bind
+from . import layout
 from . import mesh_bind
 
 _BAKE_NODE_NAME = "_ShiyumeBakeTarget"
+_BAKE_UV_NAME = "_ShiyumeBakeLayout"
 
 
 def _resolve_size(job):
@@ -22,9 +28,9 @@ def _resolve_size(job):
 
     width = 0
     height = 0
-    for mesh in job.meshes.values():
-        render_uv = mesh_bind.render_uv_name(mesh)
-        for material in mesh.materials:
+    for entry in job.entries:
+        render_uv = mesh_bind.render_uv_name(entry.mesh)
+        for material in entry.mesh.materials:
             bound, _unknown = graph_bind.image_nodes_using_uv(
                 material, job.source_uv, render_uv)
             for _node, image in bound:
@@ -35,11 +41,27 @@ def _resolve_size(job):
 
 def _unique_materials(job):
     materials = {}
-    for mesh in job.meshes.values():
-        for material in mesh.materials:
+    for entry in job.entries:
+        for material in entry.mesh.materials:
             if material is not None and material.use_nodes and material.node_tree:
                 materials[material.as_pointer()] = material
     return list(materials.values())
+
+
+def _add_layout_uv(job):
+    """把解析好的排布灌进临时 UV 层，返回被改动的网格列表。"""
+    touched = []
+    for entry in job.entries:
+        if layout.write_uv_layer(entry.mesh, _BAKE_UV_NAME, entry.loop_uv):
+            touched.append(entry.mesh)
+    return touched
+
+
+def _remove_layout_uv(meshes):
+    for mesh in meshes:
+        layer = mesh.uv_layers.get(_BAKE_UV_NAME)
+        if layer is not None:
+            mesh.uv_layers.remove(layer)
 
 
 def _add_bake_targets(materials, image):
@@ -128,24 +150,26 @@ def run(job):
         return None
 
     name = image_bind.unique_name(
-        f"{job.objects[0].name}_Bake", job.output_directory)
+        f"{job.entries[0].obj.name}_Bake", job.output_directory)
     image = image_bind.create(name, width, height, use_float=False)
 
     state = _capture_scene(scene)
     created = _add_bake_targets(materials, image)
+    touched = _add_layout_uv(job)
     try:
         _configure_scene(scene, settings)
 
         bpy.ops.object.select_all(action='DESELECT')
-        for obj in job.objects:
-            obj.select_set(True)
-        job.context.view_layer.objects.active = job.objects[0]
+        for entry in job.entries:
+            entry.obj.select_set(True)
+        job.context.view_layer.objects.active = job.entries[0].obj
 
-        bpy.ops.object.bake(type=settings.bake_type, uv_layer=job.target_uv)
+        bpy.ops.object.bake(type=settings.bake_type, uv_layer=_BAKE_UV_NAME)
     except RuntimeError as exception:
         job.error(f"Cycles 烘焙失败: {exception}")
         return None
     finally:
+        _remove_layout_uv(touched)
         _remove_bake_targets(created)
         _restore_scene(scene, state)
 

@@ -2,8 +2,7 @@ import bpy
 import bmesh
 from mathutils import Vector
 
-# 展平物体上记录来源物体名的自定义属性，供「网格坐标写回UV」按此回程
-SOURCE_OBJECT_PROP = "shiyume_uv_source"
+from .uv_transfer.layout import SOURCE_OBJECT_PROP
 
 
 class SHIYUME_OT_MeshToUV(bpy.types.Operator):

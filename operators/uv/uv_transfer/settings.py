@@ -13,13 +13,23 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
         items=_COLOR_SOURCE_ITEMS,
         default=_COLOR_SOURCE_ITEMS[0][0],
     )
+    target_space: bpy.props.EnumProperty(
+        name="目标排布",
+        items=[
+            ('MESH_XY', "展平网格（世界投影）",
+             "取展平网格求值后的世界 XY —— 等价于 ortho_scale=1、对准 (0.5, 0.5) 的"
+             "正交顶视相机。改网格就是改排布，修改器与形态键都算数"),
+            ('UV_LAYER', "目标 UV 层", "直接用另一个 UV 层作为新排布"),
+        ],
+        default='MESH_XY',
+    )
     source_uv: bpy.props.StringProperty(
         name="源 UV",
         description="贴图当前所在的 UV 层（重定向的采样来源）",
     )
     target_uv: bpy.props.StringProperty(
         name="目标 UV",
-        description="新的 UV 布局层（重定向的输出排布）",
+        description="新排布所在的 UV 层；世界投影模式下用来接住投影结果",
     )
     resolution: bpy.props.EnumProperty(
         name="分辨率",

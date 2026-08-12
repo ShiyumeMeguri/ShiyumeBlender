@@ -35,19 +35,19 @@ def _memory_batches(images, budget):
 
 
 def discover(job):
-    """找出所有采样源 UV 的图像纹理节点，按图像归并其所属材质槽。"""
+    """找出所有采样源 UV 的图像纹理节点，按图像归并其所属 (物体, 材质槽)。"""
     image_slots = {}
     image_nodes = {}
     unresolved = 0
 
-    for mesh_name, mesh in job.meshes.items():
-        render_uv = mesh_bind.render_uv_name(mesh)
-        for slot_index, material in enumerate(mesh.materials):
+    for index, entry in enumerate(job.entries):
+        render_uv = mesh_bind.render_uv_name(entry.mesh)
+        for slot_index, material in enumerate(entry.mesh.materials):
             bound, unknown = graph_bind.image_nodes_using_uv(
                 material, job.source_uv, render_uv)
             unresolved += unknown
             for node, image in bound:
-                image_slots.setdefault(image, set()).add((mesh_name, slot_index))
+                image_slots.setdefault(image, set()).add((index, slot_index))
                 image_nodes.setdefault(image, {})[node.as_pointer()] = node
 
     return image_slots, image_nodes, unresolved
@@ -71,11 +71,12 @@ def _group_by_workload(job, image_slots):
 def _gather_triangles(job, cache, slots):
     target_parts = []
     source_parts = []
-    for mesh_name, slot_index in sorted(slots):
-        if mesh_name not in cache:
-            cache[mesh_name] = mesh_bind.triangles_by_material(
-                job.meshes[mesh_name], job.source_uv, job.target_uv)
-        pair = cache[mesh_name].get(slot_index)
+    for entry_index, slot_index in sorted(slots):
+        if entry_index not in cache:
+            entry = job.entries[entry_index]
+            cache[entry_index] = mesh_bind.triangles_by_material(
+                entry.mesh, job.source_uv, entry.loop_uv)
+        pair = cache[entry_index].get(slot_index)
         if pair is None:
             continue
         target_parts.append(pair[0])
