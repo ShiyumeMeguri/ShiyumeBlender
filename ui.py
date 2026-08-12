@@ -30,7 +30,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.grid_sort", icon="GRID")
             layout.operator("shiyume.topology_cut", icon="MESH_GRID")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
-            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
             layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
             layout.operator("shiyume.clear_empty", icon="X")
             layout.operator("shiyume.clear_zero_vgs", icon="GROUP_VERTEX")
@@ -39,13 +38,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.label(text="法线贴图烘焙")
             layout.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
             layout.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
-
-            layout.separator()
-            layout.label(text="渲染与杂项")
-            layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
-            layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
-            layout.operator("shiyume.modular_export", icon="EXPORT")
-            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
 
         elif mode in {"EDIT_MESH", "EDIT"}:
             layout.label(text="网格工具")
@@ -59,24 +51,17 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
             layout.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
             layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
-            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
             layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
 
         elif mode == "EDIT_ARMATURE":
             layout.label(text="骨架工具")
             layout.operator("shiyume.auto_bone_orientation", icon="CONSTRAINT_BONE")
-            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
 
         elif mode == "EDIT_CURVE":
             layout.label(text="曲线工具")
             layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
             layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
             layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
-
-        else:
-            layout.label(text="通用工具")
-            layout.operator("shiyume.batch_rename", icon="SORTALPHA")
-            layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
 
 
 class SHIYUME_MT_UV(bpy.types.Menu):
@@ -185,10 +170,6 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
         col.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
         col.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
 
-        col = layout.column(align=True)
-        col.label(text="重命名")
-        col.operator("shiyume.batch_rename", icon="SORTALPHA")
-
 
 class SHIYUME_PT_Shader(bpy.types.Panel):
     bl_label = "着色 / 烘焙"
@@ -209,7 +190,6 @@ class SHIYUME_PT_Shader(bpy.types.Panel):
         col.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
 
         layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
-        layout.operator("shiyume.batch_bake_textures", icon="RENDER_STILL")
 
 
 class SHIYUME_PT_UV(bpy.types.Panel):
@@ -308,21 +288,6 @@ class SHIYUME_PT_Curve(bpy.types.Panel):
         layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
 
 
-class SHIYUME_PT_Render(bpy.types.Panel):
-    bl_label = "渲染 / 导出"
-    bl_idname = "SHIYUME_PT_Render"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.viewport_simple_render", icon="RESTRICT_VIEW_OFF")
-        layout.operator("shiyume.modular_export", icon="EXPORT")
-
-
 class SHIYUME_PT_Misc(bpy.types.Panel):
     bl_label = "杂项"
     bl_idname = "SHIYUME_PT_Misc"
@@ -334,7 +299,6 @@ class SHIYUME_PT_Misc(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("shiyume.outline", icon="MOD_SOLIDIFY")
         layout.operator("shiyume.clear_empty", icon="X")
         layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
 
@@ -347,7 +311,6 @@ _PANEL_CLASSES = (
     SHIYUME_PT_UV,
     SHIYUME_PT_UVTransfer,
     SHIYUME_PT_Curve,
-    SHIYUME_PT_Render,
     SHIYUME_PT_Misc,
 )
 
