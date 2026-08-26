@@ -9,6 +9,11 @@
 
 静置朝向变了会让既有姿态/动作错位，这里把它们换算回原样，对应 better_fbx 导入时的 CorrectPose
 （better_fbx importer.py:1048-1052）。
+
+那套换算只保得住**这个文件里**的姿态与动作。骨骼自带的 `ruri_locked_orientation`
+标记说的是「这根骨的静置轴向是外部数据的一部分」——外面有一张逐骨的表按这套轴向陈述
+增量（游戏的表情表就是：位移占九成以上，全部写在它自己的轴里），表在文件外面，重新指向
+它就等于把那张表悄悄作废，而且不报错、只错位。带这个标记的骨骼一律不动。
 """
 
 import bpy
@@ -18,6 +23,11 @@ from ._compat import list_action_fcurves, new_fcurve
 
 # 方向定不下来的判据，沿用 better_fbx importer.py:790 的取值
 _MINIMUM_LENGTH = 1e-3
+
+# 骨骼上的「静置轴向不许动」标记，见文件头。故意是个裸字符串常量而不是 import：
+# 写这个标记的是别的插件（RuriRipperImporter 知道哪些骨被逐骨表管辖），本插件只需要
+# 认得这个约定，不该为此依赖它。
+LOCKED_ORIENTATION_PROP = "ruri_locked_orientation"
 
 _CHANNEL_SIZE = {
     'location': 3,
@@ -242,8 +252,10 @@ class SHIYUME_OT_AutoBoneOrientation(bpy.types.Operator):
     def _collect_targets(self, edit_bones, selection):
         selected = [bone for bone in edit_bones if selection[bone.name]]
         if self.scope == 'ALL' or (self.scope == 'AUTO' and not selected):
-            return list(edit_bones)
-        return selected
+            candidates = list(edit_bones)
+        else:
+            candidates = selected
+        return [bone for bone in candidates if not bone.get(LOCKED_ORIENTATION_PROP)]
 
     def _live_location_bones(self, obj):
         """location 通道真的在用的骨骼：静态位移非零，或动作里有非零位移关键帧。"""
