@@ -35,6 +35,10 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.clear_zero_vgs", icon="GROUP_VERTEX")
 
             layout.separator()
+            layout.label(text="头发")
+            layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
+
+            layout.separator()
             layout.label(text="法线贴图烘焙")
             layout.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
             layout.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
@@ -293,6 +297,7 @@ class SHIYUME_PT_Curve(bpy.types.Panel):
         layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
         layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
         layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
+        layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
 
 
 class SHIYUME_PT_Misc(bpy.types.Panel):

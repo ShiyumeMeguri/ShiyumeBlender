@@ -2,11 +2,13 @@ import bpy
 from . import smooth_fix
 from . import to_mesh
 from . import from_mesh
+from . import hair_to_path
 
 classes = (
     smooth_fix.SHIYUME_OT_CurveSmoothFix,
     to_mesh.SHIYUME_OT_CurveToMesh,
     from_mesh.SHIYUME_OT_MeshToCurve,
+    hair_to_path.SHIYUME_OT_HairToPath,
 )
 
 def register():
