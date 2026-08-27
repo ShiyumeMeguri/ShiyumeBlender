@@ -761,11 +761,16 @@ def walk_loop_cut(patch, crotch, start):
     return chain
 
 
-def group_holds_tip(group, tips):
-    return any(any(face in group for face in tip.link_faces) for tip in tips)
+def group_tip_count(group, tips):
+    return sum(1 for tip in tips
+               if any(face in group for face in tip.link_faces))
 
 
-def split_patch_by_loops(patch, tips):
+def crotch_has_partner(crotch, partners):
+    return any((crotch.co - point).length < PAIR_WELD_DISTANCE for point in partners)
+
+
+def split_patch_by_loops(patch, tips, partners):
     local = [tip for tip in tips
              if any(face in patch.faces for face in tip.link_faces)]
     blocked = set()
@@ -781,26 +786,44 @@ def split_patch_by_loops(patch, tips):
         groups = edge_connected_groups(patch.faces, merged)
         if len(groups) <= count:
             continue
-        if local and any(not group_holds_tip(group, local) for group in groups):
-            continue
+        if local:
+            tally = [group_tip_count(group, local) for group in groups]
+            if min(tally) < 1 and not crotch_has_partner(crotch, partners):
+                continue
         blocked = merged
         count = len(groups)
     return edge_connected_groups(patch.faces, blocked)
 
 
-def split_island_by_loops(island, matrix):
-    faces = set()
-    for vertex in island:
-        faces.update(vertex.link_faces)
-    clustered = tip_clusters(island)
-    tips = clustered if clustered is not None else tip_vertices(island, TIP_ANGLE_LIMIT)
+def mesh_patches(islands):
     entries = []
-    for group in edge_connected_groups(faces):
-        for piece in split_patch_by_loops(FacePatch(group), tips):
-            entry = ribbon_from_faces(piece, matrix)
-            if entry is not None:
-                entries.append(entry)
+    for shell_index, island in enumerate(islands):
+        faces = set()
+        for vertex in island:
+            faces.update(vertex.link_faces)
+        clustered = tip_clusters(island)
+        tips = clustered if clustered is not None else tip_vertices(island, TIP_ANGLE_LIMIT)
+        for group in edge_connected_groups(faces):
+            entries.append((shell_index, tips, FacePatch(group)))
     return entries
+
+
+def split_all_patches(islands, matrix):
+    patches = mesh_patches(islands)
+    marks = [[vertex.co.copy() for vertex in crotch_vertices(patch)]
+             for _, _, patch in patches]
+    produced = {}
+    for position, entry in enumerate(patches):
+        shell_index, tips, patch = entry
+        partners = []
+        for other in range(len(marks)):
+            if other != position:
+                partners.extend(marks[other])
+        for piece in split_patch_by_loops(patch, tips, partners):
+            ribbon = ribbon_from_faces(piece, matrix)
+            if ribbon is not None:
+                produced.setdefault(shell_index, []).append(ribbon)
+    return produced
 
 
 def collect_strands(source_object, split_branches=True):
@@ -811,10 +834,12 @@ def collect_strands(source_object, split_branches=True):
     rejected = []
     leftover = []
     entries = []
-    for shell_index, island in enumerate(shell_islands(mesh)):
+    islands = shell_islands(mesh)
+    produced = split_all_patches(islands, matrix) if split_branches else {}
+    for shell_index, island in enumerate(islands):
         loops = island_face_loops(island, matrix)
         if split_branches:
-            found = split_island_by_loops(island, matrix)
+            found = produced.get(shell_index, [])
         else:
             ribbon, _ = extract_ribbon(island, matrix)
             found = [(ribbon, loops, len(island), set())] if ribbon is not None else []
