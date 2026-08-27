@@ -16,8 +16,9 @@ PAIR_COINCIDENCE_FRACTION = 0.5
 PAIR_WELD_DISTANCE = 1.0e-5
 PROFILE_SURVEY_FRACTION = 0.30
 PROFILE_SURVEY_LIMIT = 14
-STRAND_ASPECT_LIMIT = 0.35
-STRAND_SPLIT_DEPTH = 3
+SEAM_SPLIT_DEPTH = 3
+SEAM_REFINE_ROUNDS = 4
+SEAM_WIDTH_MEDIAN_LIMIT = 2.4
 SLICE_LIMIT_FACTOR = 1.5
 SLICE_MERGE_FRACTION = 0.02
 PROFILE_SIMPLIFY_FRACTION = 0.03
@@ -26,6 +27,10 @@ REGULARIZATION = 1.0e-6
 TILT_ITERATIONS = 4
 TILT_WEIGHT_FLOOR = 0.02
 TILT_REPORT_FRACTION = 0.20
+
+
+def ordered(elements):
+    return sorted(elements, key=lambda element: element.index)
 
 
 def shell_islands(mesh):
@@ -109,8 +114,8 @@ def boundary_cycle(component):
 
 def split_cycle_into_rails(cycle, arclength):
     count = len(cycle)
-    ordered = sorted(range(count), key=lambda index: arclength.get(cycle[index], 0.0))
-    low, high = sorted((ordered[0], ordered[-1]))
+    ranked = sorted(range(count), key=lambda index: arclength.get(cycle[index], 0.0))
+    low, high = sorted((ranked[0], ranked[-1]))
     if low == high:
         return None
     return [cycle[low:high + 1], cycle[high:] + cycle[:low + 1]]
@@ -356,7 +361,7 @@ def opposite_edge(face, edge):
 
 def edge_rings(faces):
     union = Union()
-    for face in faces:
+    for face in ordered(faces):
         if len(face.verts) != 4:
             continue
         for edge in face.edges:
@@ -365,8 +370,8 @@ def edge_rings(faces):
             if partner is not None:
                 union.join(edge, partner)
     rings = {}
-    for face in faces:
-        for edge in face.edges:
+    for face in ordered(faces):
+        for edge in ordered(face.edges):
             union.add(edge)
             rings.setdefault(union.root(edge), set()).add(edge)
     ring_of = {}
@@ -379,7 +384,7 @@ def edge_rings(faces):
 def classify_rungs(faces):
     ring_of, ring_size = edge_rings(faces)
     votes = {}
-    for face in faces:
+    for face in ordered(faces):
         if len(face.verts) != 4:
             continue
         sizes = {}
@@ -387,17 +392,17 @@ def classify_rungs(faces):
             sizes.setdefault(ring_of[edge], []).append(edge)
         if len(sizes) != 2:
             continue
-        ordered = sorted(sizes.items(), key=lambda entry: ring_size[entry[0]])
-        for edge in ordered[0][1]:
+        ranked = sorted(sizes.items(), key=lambda entry: ring_size[entry[0]])
+        for edge in ranked[0][1]:
             votes[edge] = votes.get(edge, 0) - 1
-        for edge in ordered[1][1]:
+        for edge in ranked[1][1]:
             votes[edge] = votes.get(edge, 0) + 1
     return set(edge for edge, value in votes.items() if value > 0)
 
 
 def face_bands(faces, rungs):
-    union = Union(faces)
-    for face in faces:
+    union = Union(ordered(faces))
+    for face in ordered(faces):
         for edge in face.edges:
             if edge in rungs:
                 continue
@@ -405,9 +410,9 @@ def face_bands(faces, rungs):
                 if neighbour is not face and neighbour in faces:
                     union.join(face, neighbour)
     groups = {}
-    for face in faces:
-        groups.setdefault(union.root(face), set()).add(face)
-    bands = list(groups.values())
+    for face in ordered(faces):
+        groups.setdefault(union.root(face), []).append(face)
+    bands = [set(group) for group in groups.values()]
     band_of = {}
     for index, band in enumerate(bands):
         for face in band:
@@ -466,7 +471,8 @@ def edge_connected_groups(faces):
     remaining = set(faces)
     groups = []
     while remaining:
-        seed = remaining.pop()
+        seed = ordered(remaining)[0]
+        remaining.discard(seed)
         stack = [seed]
         group = {seed}
         while stack:
@@ -484,7 +490,7 @@ def edge_connected_groups(faces):
 def submesh_from_faces(faces):
     mesh = bmesh.new()
     lookup = {}
-    for face in faces:
+    for face in ordered(faces):
         for vertex in face.verts:
             if vertex not in lookup:
                 lookup[vertex] = mesh.verts.new(vertex.co)
@@ -513,60 +519,183 @@ def island_face_loops(island, matrix):
     faces = set()
     for vertex in island:
         faces.update(vertex.link_faces)
-    return [[matrix @ vertex.co for vertex in face.verts] for face in faces]
+    return [[matrix @ vertex.co for vertex in face.verts] for face in ordered(faces)]
 
 
-def ribbon_aspect(ribbon):
-    left, right = ribbon
+def columns_of(faces, rungs):
+    parent = {face: face for face in ordered(faces)}
+
+    def root(item):
+        while parent[item] is not item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for face in ordered(faces):
+        for edge in ordered(face.edges):
+            if edge not in rungs:
+                continue
+            for neighbour in ordered(edge.link_faces):
+                if neighbour is not face and neighbour in faces:
+                    first, second = root(face), root(neighbour)
+                    if first is not second:
+                        parent[first] = second
+    groups = {}
+    for face in ordered(faces):
+        groups.setdefault(root(face), []).append(face)
+    return [set(group) for group in groups.values()]
+
+
+def column_links(columns):
+    index_of = {}
+    for index, column in enumerate(columns):
+        for face in ordered(column):
+            index_of[face] = index
+    links = {}
+    for face in ordered(index_of):
+        index = index_of[face]
+        for edge in face.edges:
+            for neighbour in edge.link_faces:
+                other = index_of.get(neighbour)
+                if other is None or other == index:
+                    continue
+                links.setdefault(index, set()).add(other)
+    return links
+
+
+def column_orders(columns, links):
+    if not columns:
+        return []
+    ends = [index for index in range(len(columns)) if len(links.get(index, ())) <= 1]
+    orders = []
+    for start in (ends or [0])[:2]:
+        order = [start]
+        seen = {start}
+        while True:
+            following = None
+            for other in sorted(links.get(order[-1], ())):
+                if other not in seen:
+                    following = other
+                    break
+            if following is None:
+                break
+            order.append(following)
+            seen.add(following)
+        if len(order) == len(columns):
+            orders.append(order)
+    if not orders:
+        orders.append(list(range(len(columns))))
+    return orders
+
+
+def ribbon_from_faces(faces, matrix):
+    sub = submesh_from_faces(faces)
+    islands = shell_islands(sub)
+    if len(islands) != 1:
+        sub.free()
+        return None
+    ribbon, _ = extract_ribbon(islands[0], matrix)
+    if ribbon is None:
+        sub.free()
+        return None
+    loops = island_face_loops(islands[0], matrix)
+    size = len(islands[0])
+    sub.free()
+    return (ribbon, loops, size, set(faces))
+
+
+def ribbon_width(entry):
+    left, right = entry[0]
     sections = pair_rails(left, right)
-    if len(sections) < 2:
-        return 1.0e9
-    centers = [(entry[1] + entry[2]) * 0.5 for entry in sections]
-    widths = [(entry[2] - entry[1]).length for entry in sections]
-    length = sum((centers[index + 1] - centers[index]).length
-                 for index in range(len(centers) - 1))
-    if length <= 1.0e-12:
-        return 1.0e9
-    return max(widths) / length
+    if not sections:
+        return 0.0
+    return max((section[2] - section[1]).length for section in sections)
 
 
-def extract_island_ribbons(island, matrix, depth):
-    piece, reason = extract_ribbon(island, matrix)
-    if piece is not None and ribbon_aspect(piece) <= STRAND_ASPECT_LIMIT:
-        return [(piece, island_face_loops(island, matrix), len(island))]
+def candidate_splits(faces, matrix):
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return []
+    columns = columns_of(faces, rungs)
+    if len(columns) < 2:
+        return []
+    links = column_links(columns)
+    found = []
+    for order in column_orders(columns, links):
+        for cut in range(1, len(columns)):
+            left = set()
+            right = set()
+            for position, index in enumerate(order):
+                (left if position < cut else right).update(columns[index])
+            if not left or not right:
+                continue
+            first = ribbon_from_faces(left, matrix)
+            if first is None:
+                continue
+            second = ribbon_from_faces(right, matrix)
+            if second is None:
+                continue
+            found.append((max(ribbon_width(first), ribbon_width(second)), first, second))
+    found.sort(key=lambda entry: entry[0])
+    return found
+
+
+def split_faces(faces, matrix, depth):
+    direct = ribbon_from_faces(faces, matrix)
+    if direct is not None:
+        return [direct]
     if depth <= 0:
-        if piece is not None:
-            return [(piece, island_face_loops(island, matrix), len(island))]
         return []
-    groups = decompose_by_rings(island)
-    if len(groups) < 2:
-        if piece is not None:
-            return [(piece, island_face_loops(island, matrix), len(island))]
+    found = candidate_splits(faces, matrix)
+    if found:
+        return [found[0][1], found[0][2]]
+    rungs = classify_rungs(faces)
+    if not rungs:
         return []
-    produced = []
-    for group in groups:
-        for part in edge_connected_groups(group):
-            sub = submesh_from_faces(part)
-            for child in shell_islands(sub):
-                produced.extend(extract_island_ribbons(child, matrix, depth - 1))
-            sub.free()
-    if produced:
-        return produced
-    if piece is not None:
-        return [(piece, island_face_loops(island, matrix), len(island))]
+    columns = columns_of(faces, rungs)
+    if len(columns) < 2:
+        return []
+    links = column_links(columns)
+    for order in column_orders(columns, links):
+        for cut in range(1, len(columns)):
+            left = set()
+            right = set()
+            for position, index in enumerate(order):
+                (left if position < cut else right).update(columns[index])
+            if not left or not right:
+                continue
+            result = split_faces(left, matrix, depth - 1) + split_faces(right, matrix, depth - 1)
+            if result:
+                return result
     return []
 
 
-def shell_ribbons(component, matrix, split_branches):
-    if not split_branches:
-        ribbon, reason = extract_ribbon(component, matrix)
-        if ribbon is None:
-            return [], reason
-        return [(ribbon, island_face_loops(component, matrix), len(component))], None
-    produced = extract_island_ribbons(component, matrix, STRAND_SPLIT_DEPTH)
-    if produced:
-        return produced, None
-    return [], "无法提取为发片条带"
+def split_island(island, matrix):
+    faces = set()
+    for vertex in island:
+        faces.update(vertex.link_faces)
+    return split_faces(faces, matrix, SEAM_SPLIT_DEPTH)
+
+
+def refine_by_width(entries, matrix, limit):
+    result = list(entries)
+    for _ in range(SEAM_REFINE_ROUNDS):
+        changed = False
+        expanded = []
+        for entry in result:
+            if ribbon_width(entry) <= limit:
+                expanded.append(entry)
+                continue
+            found = candidate_splits(entry[3], matrix)
+            if found:
+                expanded.extend((found[0][1], found[0][2]))
+                changed = True
+            else:
+                expanded.append(entry)
+        result = expanded
+        if not changed:
+            break
+    return result
 
 
 def collect_strands(source_object, split_branches=True):
@@ -574,20 +703,44 @@ def collect_strands(source_object, split_branches=True):
     mesh.from_mesh(source_object.data)
     mesh.verts.ensure_lookup_table()
     matrix = source_object.matrix_world
-    candidates = []
     rejected = []
     leftover = []
-    for shell_index, component in enumerate(shell_islands(mesh)):
-        loops = island_face_loops(component, matrix)
-        produced, reason = shell_ribbons(component, matrix, split_branches)
-        if not produced:
-            rejected.append((shell_index, len(component), reason))
+    entries = []
+    for shell_index, island in enumerate(shell_islands(mesh)):
+        loops = island_face_loops(island, matrix)
+        if split_branches:
+            found = split_island(island, matrix)
+        else:
+            ribbon, _ = extract_ribbon(island, matrix)
+            found = [(ribbon, loops, len(island), set())] if ribbon is not None else []
+        if not found:
+            rejected.append((shell_index, len(island), "无法提取为发片条带"))
             leftover.append(loops)
             continue
-        for (left, right), island_loops, island_size in produced:
-            candidates.append(Strand(left, right, island_loops, [shell_index], island_size))
+        for entry in found:
+            entries.append((shell_index, entry))
+    if split_branches and entries:
+        widths = sorted(ribbon_width(entry) for _, entry in entries)
+        limit = widths[len(widths) // 2] * SEAM_WIDTH_MEDIAN_LIMIT
+        refined = refine_by_width([entry for _, entry in entries], matrix, limit)
+        owner = {}
+        for shell_index, entry in entries:
+            for face in entry[3]:
+                owner[face] = shell_index
+        entries = []
+        for entry in refined:
+            shell_index = 0
+            for face in entry[3]:
+                if face in owner:
+                    shell_index = owner[face]
+                    break
+            entries.append((shell_index, entry))
+    candidates = []
+    for shell_index, entry in entries:
+        left, right = entry[0]
+        candidates.append(Strand(left, right, entry[1], [shell_index], entry[2]))
     strands = []
-    for candidate in sorted(candidates, key=lambda entry: -len(entry.centers)):
+    for candidate in sorted(candidates, key=lambda item: -len(item.centers)):
         merged = False
         for strand in strands:
             if rail_coincidence(strand, candidate) >= PAIR_COINCIDENCE_FRACTION:
@@ -1108,9 +1261,9 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
             bpy.data.objects.remove(probe)
 
         depsgraph.update()
-        ordered = sorted(residuals)
-        median = ordered[len(ordered) // 2] if ordered else 0.0
-        worst = ordered[-1] if ordered else 0.0
+        ranked = sorted(residuals)
+        median = ranked[len(ranked) // 2] if ranked else 0.0
+        worst = ranked[-1] if ranked else 0.0
         self.report({'INFO'}, "生成 %d 条路径曲线，跳过 %d 片，Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
             built, skipped, math.degrees(median), math.degrees(worst)))
         return {'FINISHED'} if built else {'CANCELLED'}
