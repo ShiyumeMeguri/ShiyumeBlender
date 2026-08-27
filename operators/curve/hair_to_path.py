@@ -12,7 +12,12 @@ PINCH_TIP_FRACTION = 0.10
 PINCH_JUMP_FRACTION = 0.40
 PINCH_FLATNESS_FRACTION = 0.15
 DIRECTION_VALID_FRACTION = 0.25
-CENTERLINE_MATCH_FRACTION = 0.35
+PAIR_COINCIDENCE_FRACTION = 0.5
+PAIR_WELD_DISTANCE = 1.0e-5
+BRANCH_PERSISTENCE_FRACTION = 0.08
+BRANCH_MINIMUM_FACES = 3
+PROFILE_SURVEY_FRACTION = 0.30
+PROFILE_SURVEY_LIMIT = 14
 SLICE_LIMIT_FACTOR = 1.5
 SLICE_MERGE_FRACTION = 0.02
 PROFILE_SIMPLIFY_FRACTION = 0.03
@@ -316,11 +321,260 @@ class Strand:
         return merged
 
 
-def polyline_distance(first, second):
-    return sum(closest_point_on_polyline(second, point)[1] for point in first) / len(first)
+class DisjointSet:
+    def __init__(self, items):
+        self.parent = {item: item for item in items}
+
+    def root(self, item):
+        while self.parent[item] is not item:
+            self.parent[item] = self.parent[self.parent[item]]
+            item = self.parent[item]
+        return item
+
+    def join(self, first, second):
+        a, b = self.root(first), self.root(second)
+        if a is not b:
+            self.parent[a] = b
 
 
-def collect_strands(source_object):
+def level_components(faces, field, level):
+    crossing = [face for face in faces
+                if min(field[vertex] for vertex in face.verts) < level <
+                max(field[vertex] for vertex in face.verts)]
+    if not crossing:
+        return []
+    inside = set(crossing)
+    union = DisjointSet(crossing)
+    for face in crossing:
+        for edge in face.edges:
+            first, second = edge.verts
+            low = min(field[first], field[second])
+            high = max(field[first], field[second])
+            if not (low < level < high):
+                continue
+            for neighbour in edge.link_faces:
+                if neighbour is not face and neighbour in inside:
+                    union.join(face, neighbour)
+    groups = {}
+    for face in crossing:
+        groups.setdefault(union.root(face), set()).add(face)
+    return list(groups.values())
+
+
+def build_layers(faces, field):
+    values = sorted(set(field[vertex] for face in faces for vertex in face.verts))
+    levels = []
+    layers = []
+    for index in range(len(values) - 1):
+        level = 0.5 * (values[index] + values[index + 1])
+        groups = level_components(faces, field, level)
+        if groups:
+            levels.append(level)
+            layers.append(groups)
+    return levels, layers
+
+
+def link_layers(layers):
+    forward = {}
+    backward = {}
+    for index in range(len(layers) - 1):
+        for first, group_a in enumerate(layers[index]):
+            for second, group_b in enumerate(layers[index + 1]):
+                if group_a & group_b:
+                    forward.setdefault((index, first), []).append((index + 1, second))
+                    backward.setdefault((index + 1, second), []).append((index, first))
+    return forward, backward
+
+
+def chain_segments(layers, forward, backward):
+    segment_of = {}
+    segments = []
+    for index, layer in enumerate(layers):
+        for position in range(len(layer)):
+            node = (index, position)
+            if node in segment_of:
+                continue
+            predecessors = backward.get(node, [])
+            if len(predecessors) == 1 and len(forward.get(predecessors[0], [])) == 1:
+                continue
+            chain = [node]
+            current = node
+            while True:
+                successors = forward.get(current, [])
+                if len(successors) != 1:
+                    break
+                following = successors[0]
+                if len(backward.get(following, [])) != 1:
+                    break
+                chain.append(following)
+                current = following
+            order = len(segments)
+            segments.append(chain)
+            for entry in chain:
+                segment_of[entry] = order
+    return segments, segment_of
+
+
+def segment_faces(chain, layers):
+    faces = set()
+    for index, position in chain:
+        faces |= layers[index][position]
+    return faces
+
+
+def simplify_segments(segments, segment_of, layers, levels, forward, backward):
+    total = levels[-1] - levels[0]
+    if total <= 1.0e-12:
+        return segments
+
+    def span(chain):
+        return levels[chain[-1][0]] - levels[chain[0][0]]
+
+    removed = set()
+    for index in sorted(range(len(segments)), key=lambda order: span(segments[order])):
+        if index in removed:
+            continue
+        chain = segments[index]
+        successors = forward.get(chain[-1], [])
+        predecessors = backward.get(chain[0], [])
+        if successors and predecessors:
+            continue
+        if span(chain) >= total * BRANCH_PERSISTENCE_FRACTION:
+            continue
+        if len(segment_faces(chain, layers)) >= BRANCH_MINIMUM_FACES * 3:
+            continue
+        targets = [segment_of[entry] for entry in successors + predecessors
+                   if segment_of[entry] != index and segment_of[entry] not in removed]
+        if not targets:
+            continue
+        host = targets[0]
+        segments[host] = segments[host] + chain
+        removed.add(index)
+        for entry in chain:
+            segment_of[entry] = host
+    return [segments[index] for index in range(len(segments)) if index not in removed]
+
+
+def assign_faces(segments, layers, levels, field, faces):
+    groups = [set() for _ in segments]
+    lookup = {}
+    for index, chain in enumerate(segments):
+        for entry in chain:
+            for face in layers[entry[0]][entry[1]]:
+                lookup.setdefault(face, []).append((entry[0], index))
+    for face in faces:
+        entries = lookup.get(face)
+        if not entries:
+            continue
+        average = sum(field[vertex] for vertex in face.verts) / len(face.verts)
+        best = min(entries, key=lambda entry: abs(levels[entry[0]] - average))
+        groups[best[1]].add(face)
+    return groups
+
+
+def edge_connected_groups(faces):
+    remaining = set(faces)
+    groups = []
+    while remaining:
+        seed = remaining.pop()
+        stack = [seed]
+        group = {seed}
+        while stack:
+            face = stack.pop()
+            for edge in face.edges:
+                for neighbour in edge.link_faces:
+                    if neighbour in remaining:
+                        remaining.discard(neighbour)
+                        group.add(neighbour)
+                        stack.append(neighbour)
+        groups.append(group)
+    return groups
+
+
+def decompose_branches(component, field):
+    faces = set()
+    for vertex in component:
+        faces.update(vertex.link_faces)
+    levels, layers = build_layers(faces, field)
+    if len(layers) < 2:
+        return [faces]
+    forward, backward = link_layers(layers)
+    segments, segment_of = chain_segments(layers, forward, backward)
+    segments = simplify_segments(segments, segment_of, layers, levels, forward, backward)
+    groups = assign_faces(segments, layers, levels, field, faces)
+    cleaned = []
+    for group in groups:
+        parts = edge_connected_groups(group)
+        if not parts:
+            continue
+        largest = max(parts, key=len)
+        if len(largest) >= BRANCH_MINIMUM_FACES:
+            cleaned.append(largest)
+    if not cleaned:
+        return [faces]
+    covered = set()
+    for group in cleaned:
+        covered |= group
+    orphans = faces - covered
+    if orphans:
+        max(cleaned, key=len).update(orphans)
+    return cleaned
+
+
+def submesh_from_faces(faces):
+    mesh = bmesh.new()
+    lookup = {}
+    for face in faces:
+        for vertex in face.verts:
+            if vertex not in lookup:
+                lookup[vertex] = mesh.verts.new(vertex.co)
+    mesh.verts.ensure_lookup_table()
+    for face in faces:
+        try:
+            mesh.faces.new([lookup[vertex] for vertex in face.verts])
+        except ValueError:
+            continue
+    mesh.faces.ensure_lookup_table()
+    mesh.verts.index_update()
+    return mesh
+
+
+def rail_coincidence(first, second):
+    points_a = first.left + first.right
+    points_b = second.left + second.right
+    hits_a = sum(1 for point in points_a
+                 if any((point - other).length < PAIR_WELD_DISTANCE for other in points_b))
+    hits_b = sum(1 for point in points_b
+                 if any((point - other).length < PAIR_WELD_DISTANCE for other in points_a))
+    return max(hits_a / float(len(points_a)), hits_b / float(len(points_b)))
+
+
+def island_face_loops(island, matrix):
+    faces = set()
+    for vertex in island:
+        faces.update(vertex.link_faces)
+    return [[matrix @ vertex.co for vertex in face.verts] for face in faces]
+
+
+def shell_ribbons(component, matrix, split_branches):
+    ribbon, reason = extract_ribbon(component, matrix)
+    if ribbon is not None:
+        return [(ribbon, island_face_loops(component, matrix), len(component))], None
+    if not split_branches:
+        return [], reason
+    field = shell_arclength_field(component)
+    produced = []
+    for group in decompose_branches(component, field):
+        sub = submesh_from_faces(group)
+        for island in shell_islands(sub):
+            piece, _ = extract_ribbon(island, matrix)
+            if piece is not None:
+                produced.append((piece, island_face_loops(island, matrix), len(island)))
+        sub.free()
+    return produced, (None if produced else reason)
+
+
+def collect_strands(source_object, split_branches=True):
     mesh = bmesh.new()
     mesh.from_mesh(source_object.data)
     mesh.verts.ensure_lookup_table()
@@ -329,25 +583,19 @@ def collect_strands(source_object):
     rejected = []
     leftover = []
     for shell_index, component in enumerate(shell_islands(mesh)):
-        ribbon, reason = extract_ribbon(component, matrix)
-        faces = set()
-        for vertex in component:
-            faces.update(vertex.link_faces)
-        loops = [[matrix @ vertex.co for vertex in face.verts] for face in faces]
-        if ribbon is None:
+        loops = island_face_loops(component, matrix)
+        produced, reason = shell_ribbons(component, matrix, split_branches)
+        if not produced:
             rejected.append((shell_index, len(component), reason))
             leftover.append(loops)
             continue
-        left, right = ribbon
-        candidates.append(Strand(left, right, loops, [shell_index], len(component)))
+        for (left, right), island_loops, island_size in produced:
+            candidates.append(Strand(left, right, island_loops, [shell_index], island_size))
     strands = []
     for candidate in sorted(candidates, key=lambda entry: -len(entry.centers)):
         merged = False
         for strand in strands:
-            width = max(min(strand.mean_width, candidate.mean_width), 1.0e-6)
-            forward = polyline_distance(candidate.centers, strand.centers)
-            backward = polyline_distance(strand.centers, candidate.centers)
-            if max(forward, backward) < width * CENTERLINE_MATCH_FRACTION:
+            if rail_coincidence(strand, candidate) >= PAIR_COINCIDENCE_FRACTION:
                 strand.shells.extend(candidate.shells)
                 strand.shell_indices.extend(candidate.shell_indices)
                 strand.vertex_count += candidate.vertex_count
@@ -422,20 +670,44 @@ def shell_cross_section(faces, origin, tangent, axis_x, axis_y, width):
     return merged
 
 
+def cross_section_at(strand, frames, index):
+    if strand.widths[index] <= 1.0e-9:
+        return None
+    axis_x, axis_y = frames[index]
+    polylines = []
+    for faces in strand.shells:
+        section = shell_cross_section(faces, strand.centers[index], strand.tangents[index],
+                                      axis_x, axis_y, strand.widths[index])
+        if section is None:
+            continue
+        polylines.append(simplify_polyline(section, PROFILE_SIMPLIFY_FRACTION))
+    return polylines or None
+
+
 def strand_profile(strand, frames):
     order = sorted(range(len(strand.widths)), key=lambda index: -strand.widths[index])
-    for index in order:
-        if strand.widths[index] <= 1.0e-9:
+    reference = max(strand.widths) if strand.widths else 0.0
+    survey = [index for index in order
+              if reference > 1.0e-12 and strand.widths[index] > reference * PROFILE_SURVEY_FRACTION]
+    tally = {}
+    cache = {}
+    for index in survey[:PROFILE_SURVEY_LIMIT]:
+        polylines = cross_section_at(strand, frames, index)
+        if polylines is None:
             continue
-        axis_x, axis_y = frames[index]
-        polylines = []
-        for faces in strand.shells:
-            section = shell_cross_section(faces, strand.centers[index], strand.tangents[index],
-                                          axis_x, axis_y, strand.widths[index])
-            if section is None:
-                continue
-            polylines.append(simplify_polyline(section, PROFILE_SIMPLIFY_FRACTION))
-        if polylines:
+        cache[index] = polylines
+        tally[len(polylines)] = tally.get(len(polylines), 0) + 1
+    if tally:
+        dominant = max(tally.items(), key=lambda entry: (entry[1], entry[0]))[0]
+        for index in survey:
+            polylines = cache.get(index)
+            if polylines is not None and len(polylines) == dominant:
+                return polylines
+    for index in order:
+        polylines = cache.get(index)
+        if polylines is None:
+            polylines = cross_section_at(strand, frames, index)
+        if polylines is not None:
             return polylines
     return None
 
@@ -767,6 +1039,11 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         description="按平均宽度的比例简化控制点。调小得到更多控制点与更高精度",
         default=0.10, min=0.0, max=1.0, precision=3)
 
+    split_branches: bpy.props.BoolProperty(
+        name="拆分多分支",
+        description="对无法作为单条发片提取的面片做 Reeb 分解，按分叉切成独立发丝",
+        default=True)
+
     export_unconverted: bpy.props.BoolProperty(
         name="导出未转换面片",
         description="把多分支等无法转换的面片原样导出成网格，方便手动拆分后重跑",
@@ -796,7 +1073,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         residuals = []
         try:
             for source in sources:
-                strands, rejected, leftover = collect_strands(source)
+                strands, rejected, leftover = collect_strands(source, self.split_branches)
                 skipped += len(rejected)
                 if leftover and self.export_unconverted:
                     unconverted = create_leftover_object(source.name + "_Unconverted", leftover)
