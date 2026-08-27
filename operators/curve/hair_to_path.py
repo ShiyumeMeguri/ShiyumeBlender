@@ -726,7 +726,7 @@ def angle_sum(vertex):
 
 TIP_SHARP_ANGLE = 80.0
 TIP_CROTCH_ANGLE = 270.0
-TIP_BUILDER_ORDER = "partition_with_tips,grow_with_tips,grow_faces_from_tips"
+TIP_BUILDER_ORDER = "smooth"
 
 
 def boundary_path_peak(angles, count, first, second):
@@ -1085,6 +1085,35 @@ def grow_from_tips(faces, island, matrix, limit, given=None):
     return ribbons
 
 
+def entry_smoothness(entry):
+    left, right = entry[0]
+    sections = pair_rails(left, right)
+    if len(sections) < 3:
+        return 180.0
+    centers, widths, tangents, directions = strand_frames(sections)
+    reference = max(widths) if widths else 0.0
+    total = 0.0
+    count = 0
+    for index in range(len(directions) - 1):
+        if reference > 1.0e-12 and min(widths[index], widths[index + 1]) < reference * 0.25:
+            continue
+        value = directions[index].dot(directions[index + 1])
+        total += math.degrees(math.acos(max(-1.0, min(1.0, value))))
+        count += 1
+    if not count:
+        return 180.0
+    return total / count
+
+
+def entry_balance(entry):
+    left, right = entry[0]
+    return abs(len(left) - len(right)) / float(max(len(left), len(right), 1))
+
+
+def solution_smoothness(pieces):
+    return max(entry_smoothness(entry) for entry in pieces)
+
+
 def solution_cost(pieces):
     return max(ribbon_width(entry) for entry in pieces)
 
@@ -1124,7 +1153,12 @@ def split_by_tips_ladder(island, matrix):
         if produced:
             options.append(("grow_faces_from_tips", produced))
         if options:
-            if TIP_BUILDER_ORDER == "cost":
+            if TIP_BUILDER_ORDER == "smooth":
+                options.sort(key=lambda entry: solution_smoothness(entry[1]))
+            elif TIP_BUILDER_ORDER == "balance":
+                options.sort(key=lambda entry: max(entry_balance(item)
+                                                   for item in entry[1]))
+            elif TIP_BUILDER_ORDER == "cost":
                 options.sort(key=lambda entry: solution_cost(entry[1]))
             else:
                 rank = TIP_BUILDER_ORDER.split(",")
