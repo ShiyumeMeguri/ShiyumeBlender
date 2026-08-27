@@ -867,6 +867,217 @@ def merge_to_target(entries, matrix, target):
 TIP_LIMIT_LADDER = (45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0)
 
 
+RUNG_CUT_PENALTY = 25.0
+MINCUT_HARD_RATIO = 0.6
+RAIL_CUT_COST = 1.0
+
+
+def seed_face_for(tip, faces):
+    best = None
+    for face in ordered(tip.link_faces):
+        if face not in faces:
+            continue
+        centre = sum((vertex.co for vertex in face.verts), Vector()) / len(face.verts)
+        distance = (centre - tip.co).length
+        if best is None or distance < best[0]:
+            best = (distance, face)
+    return best[1] if best else None
+
+
+def build_capacities(faces, rungs):
+    capacity = {}
+    for face in ordered(faces):
+        for edge in ordered(face.edges):
+            for other in ordered(edge.link_faces):
+                if other is face or other not in faces:
+                    continue
+                weight = RUNG_CUT_PENALTY if edge in rungs else RAIL_CUT_COST
+                weight *= max(edge.calc_length(), 1.0e-6)
+                key = (face, other)
+                capacity[key] = capacity.get(key, 0.0) + weight
+    return capacity
+
+
+def face_neighbours(faces):
+    table = {}
+    for face in ordered(faces):
+        linked = []
+        for edge in ordered(face.edges):
+            for other in ordered(edge.link_faces):
+                if other is not face and other in faces and other not in linked:
+                    linked.append(other)
+        table[face] = linked
+    return table
+
+
+def minimum_cut(faces, capacity, sources, sinks, neighbours=None):
+    if neighbours is None:
+        neighbours = face_neighbours(faces)
+    residual = dict(capacity)
+    sink_set = set(sinks)
+    while True:
+        parent = {}
+        queue = list(sources)
+        for face in queue:
+            parent[face] = None
+        target = None
+        while queue and target is None:
+            current = queue.pop(0)
+            for face in neighbours[current]:
+                if face in parent or residual.get((current, face), 0.0) <= 1.0e-12:
+                    continue
+                parent[face] = current
+                if face in sink_set:
+                    target = face
+                    break
+                queue.append(face)
+        if target is None:
+            break
+        flow = None
+        node = target
+        while parent[node] is not None:
+            value = residual[(parent[node], node)]
+            flow = value if flow is None else min(flow, value)
+            node = parent[node]
+        node = target
+        while parent[node] is not None:
+            residual[(parent[node], node)] -= flow
+            residual[(node, parent[node])] = residual.get((node, parent[node]), 0.0) + flow
+            node = parent[node]
+    reachable = set(sources)
+    queue = list(sources)
+    while queue:
+        current = queue.pop(0)
+        for face in neighbours[current]:
+            if face in reachable or residual.get((current, face), 0.0) <= 1.0e-12:
+                continue
+            reachable.add(face)
+            queue.append(face)
+    return reachable
+
+
+def tip_distance_field(faces, neighbours, seed):
+    centre = {}
+    for face in faces:
+        centre[face] = sum((vertex.co for vertex in face.verts), Vector()) / len(face.verts)
+    distance = {seed: 0.0}
+    queue = [(0.0, seed.index, seed)]
+    while queue:
+        value, _, face = heapq.heappop(queue)
+        if value > distance.get(face, 1.0e30) + 1.0e-12:
+            continue
+        for other in neighbours[face]:
+            step = value + (centre[other] - centre[face]).length
+            if step < distance.get(other, 1.0e30) - 1.0e-12:
+                distance[other] = step
+                heapq.heappush(queue, (step, other.index, other))
+    return distance
+
+
+def hard_regions(faces, neighbours, seeds, ratio):
+    fields = [tip_distance_field(faces, neighbours, seed) for seed in seeds]
+    regions = [set() for _ in seeds]
+    for face in ordered(faces):
+        values = sorted((fields[index].get(face, 1.0e30), index)
+                        for index in range(len(seeds)))
+        if len(values) < 2 or values[1][0] >= 1.0e29:
+            continue
+        if values[0][0] <= values[1][0] * ratio:
+            regions[values[0][1]].add(face)
+    for index, seed in enumerate(seeds):
+        regions[index].add(seed)
+    return regions
+
+
+def mincut_split(faces, matrix, tips):
+    if len(tips) < 2:
+        return None
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return None
+    groups = [(set(faces), list(tips))]
+    result = []
+    for _ in range(len(tips) * 2):
+        pending = []
+        for bucket, marks in groups:
+            if len(marks) <= 1:
+                result.append((bucket, marks))
+                continue
+            capacity = build_capacities(bucket, rungs)
+            neighbours = face_neighbours(bucket)
+            seeds = [seed_face_for(tip, bucket) for tip in marks]
+            if any(seed is None for seed in seeds):
+                result.append((bucket, marks))
+                continue
+            regions = hard_regions(bucket, neighbours, seeds, MINCUT_HARD_RATIO)
+            best = None
+            for index in range(1, len(marks)):
+                near_seeds = regions[0]
+                far_seeds = set()
+                for other in range(len(marks)):
+                    if other != 0:
+                        far_seeds |= regions[other]
+                far_seeds -= near_seeds
+                if not near_seeds or not far_seeds:
+                    continue
+                near = minimum_cut(bucket, capacity, near_seeds, far_seeds, neighbours)
+                far = bucket - near
+                if not near or not far:
+                    continue
+                score = min(len(near), len(far))
+                if best is None or score > best[0]:
+                    best = (score, near, far, index)
+                break
+            if best is None:
+                result.append((bucket, marks))
+                continue
+            _, near, far, index = best
+            near_marks = [tip for tip in marks if seed_face_for(tip, near) is not None]
+            far_marks = [tip for tip in marks if seed_face_for(tip, far) is not None]
+            if not near_marks or not far_marks:
+                result.append((bucket, marks))
+                continue
+            pending.append((near, near_marks))
+            pending.append((far, far_marks))
+        if not pending:
+            break
+        groups = pending
+        if all(len(marks) <= 1 for _, marks in groups):
+            result.extend(groups)
+            break
+    if len(result) != len(tips):
+        return None
+    produced = []
+    for bucket, _ in result:
+        entry = ribbon_from_faces(bucket, matrix)
+        if entry is None:
+            parts = edge_connected_groups(bucket)
+            if parts:
+                largest = max(parts, key=len)
+                entry = ribbon_from_faces(largest, matrix)
+                if entry is None:
+                    entry = ribbon_from_faces(largest, matrix, True)
+        if entry is None:
+            entry = ribbon_from_faces(bucket, matrix, True)
+        if entry is None:
+            return None
+        produced.append(entry)
+    covered = set()
+    for entry in produced:
+        covered |= entry[3]
+    orphans = set(faces) - covered
+    if orphans:
+        host = max(range(len(produced)), key=lambda index: len(produced[index][3]))
+        merged = produced[host][3] | orphans
+        entry = ribbon_from_faces(merged, matrix)
+        if entry is None:
+            entry = ribbon_from_faces(merged, matrix, True)
+        if entry is None:
+            return None
+        produced[host] = entry
+    return produced
+
+
 def grow_faces_from_tips(faces, matrix, tips):
     if len(tips) < 2:
         return None
@@ -1186,9 +1397,39 @@ def snap_to_columns(pieces, faces, matrix):
             return None
         entry = ribbon_from_faces(bucket, matrix)
         if entry is None:
+            entry = ribbon_from_faces(bucket, matrix, True)
+        if entry is None:
             return None
         produced.append(entry)
     return produced
+
+
+def cut_rung_ratio(pieces, faces, rungs):
+    owner = {}
+    for index, entry in enumerate(pieces):
+        for face in entry[3]:
+            owner[face] = index
+    rung_length = 0.0
+    rail_length = 0.0
+    seen = set()
+    for face in ordered(faces):
+        for edge in ordered(face.edges):
+            if edge in seen:
+                continue
+            touching = [other for other in edge.link_faces if other in owner]
+            if len(touching) != 2:
+                continue
+            if owner[touching[0]] == owner[touching[1]]:
+                continue
+            seen.add(edge)
+            if edge in rungs:
+                rung_length += edge.calc_length()
+            else:
+                rail_length += edge.calc_length()
+    total = rung_length + rail_length
+    if total <= 1.0e-12:
+        return 1.0
+    return rung_length / total
 
 
 def solution_smoothness(pieces):
@@ -1232,6 +1473,9 @@ def split_by_tips_ladder(island, matrix):
         produced = grow_faces_from_tips(faces, matrix, tips)
         if produced:
             options.append(("grow_faces_from_tips", produced))
+        produced = mincut_split(faces, matrix, tips)
+        if produced:
+            options.append(("mincut_split", produced))
         if opposite:
             folded = hairpin_split(whole, matrix)
             if folded:
@@ -1241,7 +1485,12 @@ def split_by_tips_ladder(island, matrix):
             if snapped and len(snapped) == len(produced):
                 options.append((label + "_snapped", snapped))
         if options:
-            if TIP_BUILDER_ORDER == "smooth":
+            if TIP_BUILDER_ORDER == "cut":
+                cut_rungs = classify_rungs(faces)
+                options.sort(key=lambda entry: (
+                    round(cut_rung_ratio(entry[1], faces, cut_rungs), 3),
+                    solution_smoothness(entry[1])))
+            elif TIP_BUILDER_ORDER == "smooth":
                 options.sort(key=lambda entry: solution_smoothness(entry[1]))
             elif TIP_BUILDER_ORDER == "balance":
                 options.sort(key=lambda entry: max(entry_balance(item)
