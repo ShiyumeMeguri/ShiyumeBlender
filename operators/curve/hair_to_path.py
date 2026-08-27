@@ -136,7 +136,7 @@ def backtrack_ratio(run, arclength):
     return decrease / span
 
 
-def extract_ribbon(component, matrix):
+def extract_ribbon(component, matrix, relaxed=False):
     cycle = boundary_cycle(component)
     if cycle is None:
         return None, "边界不是单一闭环"
@@ -145,10 +145,12 @@ def extract_ribbon(component, matrix):
     if runs is None or len(runs) < 2:
         return None, "无法切分出两条边界线"
     runs.sort(key=run_length, reverse=True)
-    if run_length(runs[1]) < run_length(runs[0]) * RAIL_LENGTH_RATIO:
+    ratio = RAIL_LENGTH_RATIO * (0.4 if relaxed else 1.0)
+    allowance = BACKTRACK_ALLOWANCE * (4.0 if relaxed else 1.0)
+    if run_length(runs[1]) < run_length(runs[0]) * ratio:
         return None, "两条边界线长度悬殊，可能是多分支"
     for run in runs[:2]:
-        if backtrack_ratio(run, arclength) > BACKTRACK_ALLOWANCE:
+        if backtrack_ratio(run, arclength) > allowance:
             return None, "边界线折返，属于多分支头发，需要手动拆分"
     left = [matrix @ vertex.co for vertex in runs[0]]
     right = [matrix @ vertex.co for vertex in runs[1]]
@@ -588,13 +590,13 @@ def column_orders(columns, links):
     return orders
 
 
-def ribbon_from_faces(faces, matrix):
+def ribbon_from_faces(faces, matrix, relaxed=False):
     sub = submesh_from_faces(faces)
     islands = shell_islands(sub)
     if len(islands) != 1:
         sub.free()
         return None
-    ribbon, _ = extract_ribbon(islands[0], matrix)
+    ribbon, _ = extract_ribbon(islands[0], matrix, relaxed)
     if ribbon is None:
         sub.free()
         return None
@@ -698,6 +700,387 @@ def refine_by_width(entries, matrix, limit):
     return result
 
 
+TIP_ANGLE_LIMIT = 70.0
+OPPOSITE_END_SPREAD = 0.5
+HAIRPIN_ANGLE = 110.0
+HAIRPIN_MARGIN = 0.2
+TIP_PREFERENCE = "min"
+TIP_LADDER_SLACK = 2
+
+
+def corner_angle(face, vertex):
+    verts = list(face.verts)
+    index = verts.index(vertex)
+    before = verts[index - 1].co - vertex.co
+    after = verts[(index + 1) % len(verts)].co - vertex.co
+    if before.length < 1.0e-12 or after.length < 1.0e-12:
+        return 0.0
+    return math.acos(max(-1.0, min(1.0, before.normalized().dot(after.normalized()))))
+
+
+def angle_sum(vertex):
+    return math.degrees(sum(corner_angle(face, vertex) for face in vertex.link_faces))
+
+
+def tip_vertices(island, limit=TIP_ANGLE_LIMIT):
+    result = []
+    for vertex in ordered(island):
+        if not any(len(edge.link_faces) == 1 for edge in vertex.link_edges):
+            continue
+        if angle_sum(vertex) < limit:
+            result.append(vertex)
+    return result
+
+
+def partitions(counts, target):
+    results = []
+
+    def walk(position, remaining, current, started):
+        if remaining == 0:
+            if position == len(counts):
+                results.append(list(current))
+            return
+        total = 0
+        for end in range(position, len(counts)):
+            total += counts[end]
+            if total > 1:
+                break
+            if total == 1:
+                current.append((position, end + 1))
+                walk(end + 1, remaining - 1, current, True)
+                current.pop()
+        return
+
+    walk(0, target, [], False)
+    return results
+
+
+def fallback(faces, matrix):
+    found = candidate_splits(faces, matrix)
+    if found:
+        return [found[0][1], found[0][2]]
+    result = split_faces(faces, matrix, SEAM_SPLIT_DEPTH)
+    return result if result else []
+
+
+def tip_parameters(entry, tips, matrix):
+    left, right = entry[0]
+    sections = pair_rails(left, right)
+    if len(sections) < 2:
+        return []
+    centers = [(section[1] + section[2]) * 0.5 for section in sections]
+    values = []
+    for tip in tips:
+        point = matrix @ tip.co
+        best = min(range(len(centers)), key=lambda index: (centers[index] - point).length)
+        values.append(best / float(len(centers) - 1))
+    return values
+
+
+def tips_at_opposite_ends(entry, tips, matrix):
+    values = tip_parameters(entry, tips, matrix)
+    if len(values) < 2:
+        return False
+    return (max(values) - min(values)) > OPPOSITE_END_SPREAD
+
+
+def share_edge(first, second):
+    for face in first:
+        for edge in face.edges:
+            for neighbour in edge.link_faces:
+                if neighbour in second:
+                    return True
+    return False
+
+
+def merge_to_target(entries, matrix, target):
+    result = list(entries)
+    while len(result) > target:
+        best = None
+        for first in range(len(result)):
+            for second in range(first + 1, len(result)):
+                if not share_edge(result[first][3], result[second][3]):
+                    continue
+                merged = ribbon_from_faces(result[first][3] | result[second][3], matrix)
+                if merged is None:
+                    continue
+                score = ribbon_width(merged)
+                if best is None or score < best[0]:
+                    best = (score, first, second, merged)
+        if best is None:
+            break
+        _, first, second, merged = best
+        result = [entry for index, entry in enumerate(result)
+                  if index not in (first, second)] + [merged]
+    return result
+
+
+TIP_LIMIT_LADDER = (45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0)
+
+
+def try_partition(faces, island, matrix, limit):
+    tips = tip_vertices(island, limit)
+    target = len(tips)
+    if target < 2:
+        return None, target
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return None, target
+    columns = columns_of(faces, rungs)
+    if len(columns) < target:
+        return None, target
+    index_of = {}
+    for index, column in enumerate(columns):
+        for face in column:
+            index_of[face] = index
+    tally = [0] * len(columns)
+    for tip in tips:
+        votes = {}
+        for face in tip.link_faces:
+            position = index_of.get(face)
+            if position is not None:
+                votes[position] = votes.get(position, 0) + 1
+        if votes:
+            tally[max(votes.items(), key=lambda entry: (entry[1], -entry[0]))[0]] += 1
+    links = column_links(columns)
+    best = None
+    for order in column_orders(columns, links):
+        counts = [tally[index] for index in order]
+        if sum(counts) != target:
+            continue
+        for spans in partitions(counts, target):
+            pieces = []
+            for start, stop in spans:
+                collected = set()
+                for position in range(start, stop):
+                    collected |= columns[order[position]]
+                pieces.append(collected)
+            ribbons = [ribbon_from_faces(piece, matrix) for piece in pieces]
+            if any(entry is None for entry in ribbons):
+                continue
+            score = max(ribbon_width(entry) for entry in ribbons)
+            if best is None or score < best[0]:
+                best = (score, ribbons)
+    return (best[1] if best else None), target
+
+
+def hairpin_split(entry, matrix):
+    left, right = entry[0]
+    sections = pair_rails(left, right)
+    if len(sections) < 8:
+        return None
+    centers = [(section[1] + section[2]) * 0.5 for section in sections]
+    step = max(1, len(centers) // 8)
+    worst = 0.0
+    position = None
+    for index in range(step, len(centers) - step):
+        before = centers[index] - centers[index - step]
+        after = centers[index + step] - centers[index]
+        if before.length < 1.0e-9 or after.length < 1.0e-9:
+            continue
+        value = math.degrees(before.angle(after))
+        parameter = index / float(len(centers) - 1)
+        if value > worst and HAIRPIN_MARGIN < parameter < 1.0 - HAIRPIN_MARGIN:
+            worst = value
+            position = index
+    if position is None or worst < HAIRPIN_ANGLE:
+        return None
+    faces = entry[3]
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return None
+    bands, band_of = face_bands(faces, rungs)
+    ranking = []
+    for index, band in enumerate(bands):
+        total = 0.0
+        for face in band:
+            centre = sum((matrix @ vertex.co for vertex in face.verts), Vector()) / len(face.verts)
+            nearest = min(range(len(centers)),
+                          key=lambda position: (centers[position] - centre).length)
+            total += nearest
+        ranking.append((total / len(band), index))
+    ranking.sort()
+    best = None
+    for cut in range(1, len(ranking)):
+        first = set()
+        second = set()
+        for order, (_, index) in enumerate(ranking):
+            (first if order < cut else second).update(bands[index])
+        if not first or not second:
+            continue
+        pieces = [ribbon_from_faces(first, matrix), ribbon_from_faces(second, matrix)]
+        if any(piece is None for piece in pieces):
+            continue
+        distance = abs(ranking[cut][0] - position)
+        if best is None or distance < best[0]:
+            best = (distance, pieces)
+    return best[1] if best else None
+
+
+def grow_from_tips(faces, island, matrix, limit):
+    marks = tip_vertices(island, limit)
+    if len(marks) < 2:
+        return None
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return None
+    columns = columns_of(faces, rungs)
+    if len(columns) < len(marks):
+        return None
+    index_of = {}
+    for index, column in enumerate(columns):
+        for face in column:
+            index_of[face] = index
+    seeds = {}
+    for order, tip in enumerate(marks):
+        votes = {}
+        for face in tip.link_faces:
+            position = index_of.get(face)
+            if position is not None:
+                votes[position] = votes.get(position, 0) + 1
+        if not votes:
+            return None
+        column = max(votes.items(), key=lambda entry: (entry[1], -entry[0]))[0]
+        if column in seeds:
+            return None
+        seeds[column] = order
+    links = column_links(columns)
+    label = dict(seeds)
+    frontier = sorted(seeds)
+    while frontier:
+        following = []
+        for index in frontier:
+            for other in sorted(links.get(index, ())):
+                if other in label:
+                    continue
+                label[other] = label[index]
+                following.append(other)
+        frontier = sorted(following)
+    if len(label) < len(columns):
+        return None
+    groups = {}
+    for index, owner in label.items():
+        groups.setdefault(owner, set()).update(columns[index])
+    if len(groups) != len(marks):
+        return None
+    ribbons = []
+    for owner in sorted(groups):
+        entry = ribbon_from_faces(groups[owner], matrix)
+        if entry is None:
+            return None
+        ribbons.append(entry)
+    return ribbons
+
+
+def split_by_tips_ladder(island, matrix):
+    faces = set()
+    for vertex in island:
+        faces.update(vertex.link_faces)
+    whole = ribbon_from_faces(faces, matrix)
+    tips = tip_vertices(island, TIP_ANGLE_LIMIT)
+    if len(tips) <= 1 and whole is not None:
+        return [whole]
+    if len(tips) >= 2 and whole is not None and tips_at_opposite_ends(whole, tips, matrix):
+        folded = hairpin_split(whole, matrix)
+        return folded if folded else [whole]
+    solutions = []
+    ceiling = len(tips)
+    for limit in TIP_LIMIT_LADDER:
+        if len(tip_vertices(island, limit)) > ceiling + TIP_LADDER_SLACK:
+            continue
+        pieces, target = try_partition(faces, island, matrix, limit)
+        if pieces:
+            solutions.append((len(pieces), pieces))
+            continue
+        grown = grow_from_tips(faces, island, matrix, limit)
+        if grown:
+            solutions.append((len(grown), grown))
+    if solutions:
+        if TIP_PREFERENCE == "max":
+            solutions.sort(key=lambda entry: -entry[0])
+        elif TIP_PREFERENCE == "modal":
+            tally = {}
+            for count, _ in solutions:
+                tally[count] = tally.get(count, 0) + 1
+            favourite = max(tally.items(), key=lambda entry: (entry[1], -entry[0]))[0]
+            solutions = [entry for entry in solutions if entry[0] == favourite]
+        else:
+            solutions.sort(key=lambda entry: entry[0])
+        return solutions[0][1]
+    if whole is not None:
+        return [whole]
+    loose = fallback(faces, matrix)
+    if len(tips) >= 2 and len(loose) > len(tips):
+        loose = merge_to_target(loose, matrix, len(tips))
+    return loose
+
+
+def split_by_tips(island, matrix, limit=TIP_ANGLE_LIMIT):
+    faces = set()
+    for vertex in island:
+        faces.update(vertex.link_faces)
+    tips = tip_vertices(island, limit)
+    target = len(tips)
+    whole = ribbon_from_faces(faces, matrix)
+    if target <= 1:
+        if whole is not None:
+            return [whole]
+        loose = ribbon_from_faces(faces, matrix, True)
+        if loose is not None:
+            return [loose]
+        return fallback(faces, matrix)
+    if whole is not None and tips_at_opposite_ends(whole, tips, matrix):
+        return [whole]
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return [whole] if whole is not None else fallback(faces, matrix)
+    columns = columns_of(faces, rungs)
+    if len(columns) < target:
+        return [whole] if whole is not None else fallback(faces, matrix)
+    index_of = {}
+    for index, column in enumerate(columns):
+        for face in column:
+            index_of[face] = index
+    tally = [0] * len(columns)
+    for tip in tips:
+        votes = {}
+        for face in tip.link_faces:
+            position = index_of.get(face)
+            if position is not None:
+                votes[position] = votes.get(position, 0) + 1
+        if votes:
+            tally[max(votes.items(), key=lambda entry: (entry[1], -entry[0]))[0]] += 1
+    links = column_links(columns)
+    best = None
+    for order in column_orders(columns, links):
+        counts = [tally[index] for index in order]
+        if sum(counts) != target:
+            continue
+        for spans in partitions(counts, target):
+            pieces = []
+            for start, stop in spans:
+                collected = set()
+                for position in range(start, stop):
+                    collected |= columns[order[position]]
+                pieces.append(collected)
+            ribbons = [ribbon_from_faces(piece, matrix) for piece in pieces]
+            if any(entry is None for entry in ribbons):
+                continue
+            score = max(ribbon_width(entry) for entry in ribbons)
+            if best is None or score < best[0]:
+                best = (score, ribbons)
+    if best is not None:
+        return best[1]
+    loose = fallback(faces, matrix)
+    if len(loose) > target:
+        loose = merge_to_target(loose, matrix, target)
+    if len(loose) >= 2:
+        return loose
+    if whole is not None:
+        return [whole]
+    return loose
+
+
 def collect_strands(source_object, split_branches=True):
     mesh = bmesh.new()
     mesh.from_mesh(source_object.data)
@@ -709,7 +1092,7 @@ def collect_strands(source_object, split_branches=True):
     for shell_index, island in enumerate(shell_islands(mesh)):
         loops = island_face_loops(island, matrix)
         if split_branches:
-            found = split_island(island, matrix)
+            found = split_by_tips_ladder(island, matrix)
         else:
             ribbon, _ = extract_ribbon(island, matrix)
             found = [(ribbon, loops, len(island), set())] if ribbon is not None else []
@@ -718,22 +1101,6 @@ def collect_strands(source_object, split_branches=True):
             leftover.append(loops)
             continue
         for entry in found:
-            entries.append((shell_index, entry))
-    if split_branches and entries:
-        widths = sorted(ribbon_width(entry) for _, entry in entries)
-        limit = widths[len(widths) // 2] * SEAM_WIDTH_MEDIAN_LIMIT
-        refined = refine_by_width([entry for _, entry in entries], matrix, limit)
-        owner = {}
-        for shell_index, entry in entries:
-            for face in entry[3]:
-                owner[face] = shell_index
-        entries = []
-        for entry in refined:
-            shell_index = 0
-            for face in entry[3]:
-                if face in owner:
-                    shell_index = owner[face]
-                    break
             entries.append((shell_index, entry))
     candidates = []
     for shell_index, entry in entries:
