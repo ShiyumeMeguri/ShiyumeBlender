@@ -257,9 +257,35 @@ def row_distances(seed, group, links):
 
 def row_chain(group, links):
     first = row_distances(min(group), group, links)
-    far = max(sorted(first), key=lambda item: first[item])
-    second = row_distances(far, group, links)
-    return sorted(group, key=lambda item: (second.get(item, len(group)), item))
+    start = max(sorted(first), key=lambda item: first[item])
+    second = row_distances(start, group, links)
+    finish = max(sorted(second), key=lambda item: second[item])
+    chain = [finish]
+    while chain[-1] != start:
+        current = chain[-1]
+        options = [other for other in sorted(links.get(current, {}))
+                   if other in second and second[other] == second[current] - 1]
+        if not options:
+            break
+        chain.append(options[0])
+    placed = set(chain)
+    pending = sorted(item for item in group if item not in placed)
+    while pending:
+        best = None
+        for item in pending:
+            for other in sorted(links.get(item, {})):
+                if other in placed:
+                    position = chain.index(other)
+                    if best is None or (second.get(item, 0), item) < best[0]:
+                        best = ((second.get(item, 0), item), item, position)
+        if best is None:
+            chain.extend(pending)
+            break
+        _, item, position = best
+        chain.insert(position + 1, item)
+        placed.add(item)
+        pending.remove(item)
+    return chain
 
 
 def join_chains(pieces, centres):
