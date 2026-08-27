@@ -14,10 +14,10 @@ PINCH_FLATNESS_FRACTION = 0.15
 DIRECTION_VALID_FRACTION = 0.25
 PAIR_COINCIDENCE_FRACTION = 0.5
 PAIR_WELD_DISTANCE = 1.0e-5
-BRANCH_PERSISTENCE_FRACTION = 0.08
-BRANCH_MINIMUM_FACES = 3
 PROFILE_SURVEY_FRACTION = 0.30
 PROFILE_SURVEY_LIMIT = 14
+STRAND_ASPECT_LIMIT = 0.35
+STRAND_SPLIT_DEPTH = 3
 SLICE_LIMIT_FACTOR = 1.5
 SLICE_MERGE_FRACTION = 0.02
 PROFILE_SIMPLIFY_FRACTION = 0.03
@@ -321,11 +321,16 @@ class Strand:
         return merged
 
 
-class DisjointSet:
-    def __init__(self, items):
+class Union:
+    def __init__(self, items=()):
         self.parent = {item: item for item in items}
 
+    def add(self, item):
+        if item not in self.parent:
+            self.parent[item] = item
+
     def root(self, item):
+        self.add(item)
         while self.parent[item] is not item:
             self.parent[item] = self.parent[self.parent[item]]
             item = self.parent[item]
@@ -337,139 +342,124 @@ class DisjointSet:
             self.parent[a] = b
 
 
-def level_components(faces, field, level):
-    crossing = [face for face in faces
-                if min(field[vertex] for vertex in face.verts) < level <
-                max(field[vertex] for vertex in face.verts)]
-    if not crossing:
-        return []
-    inside = set(crossing)
-    union = DisjointSet(crossing)
-    for face in crossing:
+def opposite_edge(face, edge):
+    if len(face.verts) != 4:
+        return None
+    corners = set(edge.verts)
+    for other in face.edges:
+        if other is edge:
+            continue
+        if not (set(other.verts) & corners):
+            return other
+    return None
+
+
+def edge_rings(faces):
+    union = Union()
+    for face in faces:
+        if len(face.verts) != 4:
+            continue
         for edge in face.edges:
-            first, second = edge.verts
-            low = min(field[first], field[second])
-            high = max(field[first], field[second])
-            if not (low < level < high):
+            union.add(edge)
+            partner = opposite_edge(face, edge)
+            if partner is not None:
+                union.join(edge, partner)
+    rings = {}
+    for face in faces:
+        for edge in face.edges:
+            union.add(edge)
+            rings.setdefault(union.root(edge), set()).add(edge)
+    ring_of = {}
+    for key, group in rings.items():
+        for edge in group:
+            ring_of[edge] = key
+    return ring_of, {key: len(group) for key, group in rings.items()}
+
+
+def classify_rungs(faces):
+    ring_of, ring_size = edge_rings(faces)
+    votes = {}
+    for face in faces:
+        if len(face.verts) != 4:
+            continue
+        sizes = {}
+        for edge in face.edges:
+            sizes.setdefault(ring_of[edge], []).append(edge)
+        if len(sizes) != 2:
+            continue
+        ordered = sorted(sizes.items(), key=lambda entry: ring_size[entry[0]])
+        for edge in ordered[0][1]:
+            votes[edge] = votes.get(edge, 0) - 1
+        for edge in ordered[1][1]:
+            votes[edge] = votes.get(edge, 0) + 1
+    return set(edge for edge, value in votes.items() if value > 0)
+
+
+def face_bands(faces, rungs):
+    union = Union(faces)
+    for face in faces:
+        for edge in face.edges:
+            if edge in rungs:
                 continue
             for neighbour in edge.link_faces:
-                if neighbour is not face and neighbour in inside:
+                if neighbour is not face and neighbour in faces:
                     union.join(face, neighbour)
     groups = {}
-    for face in crossing:
-        groups.setdefault(union.root(face), set()).add(face)
-    return list(groups.values())
-
-
-def build_layers(faces, field):
-    values = sorted(set(field[vertex] for face in faces for vertex in face.verts))
-    levels = []
-    layers = []
-    for index in range(len(values) - 1):
-        level = 0.5 * (values[index] + values[index + 1])
-        groups = level_components(faces, field, level)
-        if groups:
-            levels.append(level)
-            layers.append(groups)
-    return levels, layers
-
-
-def link_layers(layers):
-    forward = {}
-    backward = {}
-    for index in range(len(layers) - 1):
-        for first, group_a in enumerate(layers[index]):
-            for second, group_b in enumerate(layers[index + 1]):
-                if group_a & group_b:
-                    forward.setdefault((index, first), []).append((index + 1, second))
-                    backward.setdefault((index + 1, second), []).append((index, first))
-    return forward, backward
-
-
-def chain_segments(layers, forward, backward):
-    segment_of = {}
-    segments = []
-    for index, layer in enumerate(layers):
-        for position in range(len(layer)):
-            node = (index, position)
-            if node in segment_of:
-                continue
-            predecessors = backward.get(node, [])
-            if len(predecessors) == 1 and len(forward.get(predecessors[0], [])) == 1:
-                continue
-            chain = [node]
-            current = node
-            while True:
-                successors = forward.get(current, [])
-                if len(successors) != 1:
-                    break
-                following = successors[0]
-                if len(backward.get(following, [])) != 1:
-                    break
-                chain.append(following)
-                current = following
-            order = len(segments)
-            segments.append(chain)
-            for entry in chain:
-                segment_of[entry] = order
-    return segments, segment_of
-
-
-def segment_faces(chain, layers):
-    faces = set()
-    for index, position in chain:
-        faces |= layers[index][position]
-    return faces
-
-
-def simplify_segments(segments, segment_of, layers, levels, forward, backward):
-    total = levels[-1] - levels[0]
-    if total <= 1.0e-12:
-        return segments
-
-    def span(chain):
-        return levels[chain[-1][0]] - levels[chain[0][0]]
-
-    removed = set()
-    for index in sorted(range(len(segments)), key=lambda order: span(segments[order])):
-        if index in removed:
-            continue
-        chain = segments[index]
-        successors = forward.get(chain[-1], [])
-        predecessors = backward.get(chain[0], [])
-        if successors and predecessors:
-            continue
-        if span(chain) >= total * BRANCH_PERSISTENCE_FRACTION:
-            continue
-        if len(segment_faces(chain, layers)) >= BRANCH_MINIMUM_FACES * 3:
-            continue
-        targets = [segment_of[entry] for entry in successors + predecessors
-                   if segment_of[entry] != index and segment_of[entry] not in removed]
-        if not targets:
-            continue
-        host = targets[0]
-        segments[host] = segments[host] + chain
-        removed.add(index)
-        for entry in chain:
-            segment_of[entry] = host
-    return [segments[index] for index in range(len(segments)) if index not in removed]
-
-
-def assign_faces(segments, layers, levels, field, faces):
-    groups = [set() for _ in segments]
-    lookup = {}
-    for index, chain in enumerate(segments):
-        for entry in chain:
-            for face in layers[entry[0]][entry[1]]:
-                lookup.setdefault(face, []).append((entry[0], index))
     for face in faces:
-        entries = lookup.get(face)
-        if not entries:
-            continue
-        average = sum(field[vertex] for vertex in face.verts) / len(face.verts)
-        best = min(entries, key=lambda entry: abs(levels[entry[0]] - average))
-        groups[best[1]].add(face)
-    return groups
+        groups.setdefault(union.root(face), set()).add(face)
+    bands = list(groups.values())
+    band_of = {}
+    for index, band in enumerate(bands):
+        for face in band:
+            band_of[face] = index
+    return bands, band_of
+
+
+def band_links(band_of, rungs):
+    links = {}
+    for edge in rungs:
+        touching = sorted(set(band_of[face] for face in edge.link_faces if face in band_of))
+        for first in range(len(touching)):
+            for second in range(first + 1, len(touching)):
+                links.setdefault(touching[first], set()).add(touching[second])
+                links.setdefault(touching[second], set()).add(touching[first])
+    return links
+
+
+def decompose_by_rings(component):
+    faces = set()
+    for vertex in component:
+        faces.update(vertex.link_faces)
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return [faces]
+    bands, band_of = face_bands(faces, rungs)
+    links = band_links(band_of, rungs)
+    junctions = set(index for index in range(len(bands)) if len(links.get(index, ())) > 2)
+    if not junctions:
+        return [faces]
+    free = [index for index in range(len(bands)) if index not in junctions]
+    union = Union(free)
+    for index in free:
+        for other in links.get(index, ()):
+            if other not in junctions:
+                union.join(index, other)
+    groups = {}
+    for index in free:
+        groups.setdefault(union.root(index), []).append(index)
+    pieces = []
+    for members in groups.values():
+        collected = set()
+        for index in members:
+            collected |= bands[index]
+        pieces.append((set(members), collected))
+    for index in junctions:
+        attached = [entry for entry in pieces if links.get(index, set()) & entry[0]]
+        if attached:
+            max(attached, key=lambda entry: len(entry[1]))[1].update(bands[index])
+        else:
+            pieces.append(({index}, set(bands[index])))
+    return [entry[1] for entry in pieces]
 
 
 def edge_connected_groups(faces):
@@ -489,36 +479,6 @@ def edge_connected_groups(faces):
                         stack.append(neighbour)
         groups.append(group)
     return groups
-
-
-def decompose_branches(component, field):
-    faces = set()
-    for vertex in component:
-        faces.update(vertex.link_faces)
-    levels, layers = build_layers(faces, field)
-    if len(layers) < 2:
-        return [faces]
-    forward, backward = link_layers(layers)
-    segments, segment_of = chain_segments(layers, forward, backward)
-    segments = simplify_segments(segments, segment_of, layers, levels, forward, backward)
-    groups = assign_faces(segments, layers, levels, field, faces)
-    cleaned = []
-    for group in groups:
-        parts = edge_connected_groups(group)
-        if not parts:
-            continue
-        largest = max(parts, key=len)
-        if len(largest) >= BRANCH_MINIMUM_FACES:
-            cleaned.append(largest)
-    if not cleaned:
-        return [faces]
-    covered = set()
-    for group in cleaned:
-        covered |= group
-    orphans = faces - covered
-    if orphans:
-        max(cleaned, key=len).update(orphans)
-    return cleaned
 
 
 def submesh_from_faces(faces):
@@ -556,22 +516,57 @@ def island_face_loops(island, matrix):
     return [[matrix @ vertex.co for vertex in face.verts] for face in faces]
 
 
-def shell_ribbons(component, matrix, split_branches):
-    ribbon, reason = extract_ribbon(component, matrix)
-    if ribbon is not None:
-        return [(ribbon, island_face_loops(component, matrix), len(component))], None
-    if not split_branches:
-        return [], reason
-    field = shell_arclength_field(component)
+def ribbon_aspect(ribbon):
+    left, right = ribbon
+    sections = pair_rails(left, right)
+    if len(sections) < 2:
+        return 1.0e9
+    centers = [(entry[1] + entry[2]) * 0.5 for entry in sections]
+    widths = [(entry[2] - entry[1]).length for entry in sections]
+    length = sum((centers[index + 1] - centers[index]).length
+                 for index in range(len(centers) - 1))
+    if length <= 1.0e-12:
+        return 1.0e9
+    return max(widths) / length
+
+
+def extract_island_ribbons(island, matrix, depth):
+    piece, reason = extract_ribbon(island, matrix)
+    if piece is not None and ribbon_aspect(piece) <= STRAND_ASPECT_LIMIT:
+        return [(piece, island_face_loops(island, matrix), len(island))]
+    if depth <= 0:
+        if piece is not None:
+            return [(piece, island_face_loops(island, matrix), len(island))]
+        return []
+    groups = decompose_by_rings(island)
+    if len(groups) < 2:
+        if piece is not None:
+            return [(piece, island_face_loops(island, matrix), len(island))]
+        return []
     produced = []
-    for group in decompose_branches(component, field):
-        sub = submesh_from_faces(group)
-        for island in shell_islands(sub):
-            piece, _ = extract_ribbon(island, matrix)
-            if piece is not None:
-                produced.append((piece, island_face_loops(island, matrix), len(island)))
-        sub.free()
-    return produced, (None if produced else reason)
+    for group in groups:
+        for part in edge_connected_groups(group):
+            sub = submesh_from_faces(part)
+            for child in shell_islands(sub):
+                produced.extend(extract_island_ribbons(child, matrix, depth - 1))
+            sub.free()
+    if produced:
+        return produced
+    if piece is not None:
+        return [(piece, island_face_loops(island, matrix), len(island))]
+    return []
+
+
+def shell_ribbons(component, matrix, split_branches):
+    if not split_branches:
+        ribbon, reason = extract_ribbon(component, matrix)
+        if ribbon is None:
+            return [], reason
+        return [(ribbon, island_face_loops(component, matrix), len(component))], None
+    produced = extract_island_ribbons(component, matrix, STRAND_SPLIT_DEPTH)
+    if produced:
+        return produced, None
+    return [], "无法提取为发片条带"
 
 
 def collect_strands(source_object, split_branches=True):
