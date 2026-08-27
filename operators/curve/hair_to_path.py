@@ -5,19 +5,9 @@ import math
 
 from mathutils import Vector
 
-BACKTRACK_ALLOWANCE = 0.12
-RAIL_LENGTH_RATIO = 0.45
-PINCH_TIP_FRACTION = 0.10
-PINCH_JUMP_FRACTION = 0.40
-PINCH_FLATNESS_FRACTION = 0.15
 DIRECTION_VALID_FRACTION = 0.25
 PAIR_COINCIDENCE_FRACTION = 0.5
 PAIR_WELD_DISTANCE = 1.0e-5
-PROFILE_SURVEY_FRACTION = 0.30
-PROFILE_SURVEY_LIMIT = 14
-SLICE_LIMIT_FACTOR = 1.5
-SLICE_MERGE_FRACTION = 0.02
-PROFILE_SIMPLIFY_FRACTION = 0.03
 PATH_ORDER = 5
 REGULARIZATION = 1.0e-6
 TILT_ITERATIONS = 4
@@ -50,36 +40,11 @@ def shell_islands(mesh):
     return islands
 
 
-def geodesic_distance(sources, allowed):
-    distance = {vertex: 0.0 for vertex in sources}
-    queue = [(0.0, vertex.index, vertex) for vertex in sources]
-    heapq.heapify(queue)
-    while queue:
-        current, _, vertex = heapq.heappop(queue)
-        if current > distance.get(vertex, 1.0e30) + 1.0e-12:
-            continue
-        for edge in vertex.link_edges:
-            other = edge.other_vert(vertex)
-            if other not in allowed:
-                continue
-            candidate = current + (other.co - vertex.co).length
-            if candidate < distance.get(other, 1.0e30) - 1.0e-12:
-                distance[other] = candidate
-                heapq.heappush(queue, (candidate, other.index, other))
-    return distance
-
-
-def shell_arclength_field(component):
-    allowed = set(component)
-    seed = geodesic_distance([component[0]], allowed)
-    return geodesic_distance([max(seed, key=seed.get)], allowed)
-
-
 def boundary_cycle(component):
     edges = set()
     for vertex in component:
         edges.update(vertex.link_edges)
-    boundary_edges = [edge for edge in edges if len(edge.link_faces) == 1]
+    boundary_edges = [edge for edge in ordered(edges) if len(edge.link_faces) == 1]
     if not boundary_edges:
         return None
     adjacency = {}
@@ -108,127 +73,301 @@ def boundary_cycle(component):
     return cycle
 
 
-def split_cycle_into_rails(cycle, arclength):
-    count = len(cycle)
-    ranked = sorted(range(count), key=lambda index: arclength.get(cycle[index], 0.0))
-    low, high = sorted((ranked[0], ranked[-1]))
-    if low == high:
+def opposite_edge(face, edge):
+    if len(face.verts) != 4:
         return None
-    return [cycle[low:high + 1], cycle[high:] + cycle[:low + 1]]
+    marks = set(edge.verts)
+    for other in face.edges:
+        if not (set(other.verts) & marks):
+            return other
+    return None
 
 
-def run_length(run):
-    return sum((run[index + 1].co - run[index].co).length for index in range(len(run) - 1))
+def ring_roots(faces, edges):
+    parent = {edge: edge for edge in edges}
+
+    def root(item):
+        while parent[item] is not item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for face in ordered(faces):
+        for edge in ordered(face.edges):
+            other = opposite_edge(face, edge)
+            if other is None:
+                continue
+            low, high = root(edge), root(other)
+            if low is not high:
+                parent[low] = high
+    return {edge: root(edge) for edge in edges}
 
 
-def backtrack_ratio(run, arclength):
-    values = [arclength.get(vertex, 0.0) for vertex in run]
-    if values[0] > values[-1]:
-        values.reverse()
-    span = values[-1] - values[0]
-    if span <= 1.0e-12:
-        return 1.0
-    decrease = sum(max(0.0, values[index] - values[index + 1]) for index in range(len(values) - 1))
-    return decrease / span
+def ring_colours(faces, roots):
+    links = {}
+    for face in ordered(faces):
+        if len(face.verts) != 4:
+            continue
+        keys = []
+        for edge in ordered(face.edges):
+            key = roots[edge]
+            if key not in keys:
+                keys.append(key)
+        if len(keys) != 2:
+            continue
+        links.setdefault(keys[0], set()).add(keys[1])
+        links.setdefault(keys[1], set()).add(keys[0])
+    colours = {}
+    for seed in ordered(set(roots.values())):
+        if seed in colours:
+            continue
+        colours[seed] = 0
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            for other in ordered(links.get(current, ())):
+                if other not in colours:
+                    colours[other] = 1 - colours[current]
+                    stack.append(other)
+    return colours
 
 
-def extract_ribbon(component, matrix, relaxed=False):
+def across_edges(faces):
+    edges = set()
+    for face in faces:
+        edges.update(face.edges)
+    edges = ordered(edges)
+    roots = ring_roots(faces, edges)
+    colours = ring_colours(faces, roots)
+    classes = {0: [], 1: []}
+    for edge in edges:
+        classes[colours[roots[edge]]].append(edge)
+    rim = [sum(1 for edge in classes[value] if len(edge.link_faces) == 1)
+           for value in (0, 1)]
+    return classes[0 if rim[0] < rim[1] else 1]
+
+
+def edge_chains(edges):
+    remaining = set(edges)
+    groups = []
+    while remaining:
+        seed = ordered(remaining)[0]
+        remaining.discard(seed)
+        group = {seed}
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            for vertex in current.verts:
+                for other in ordered(vertex.link_edges):
+                    if other in remaining:
+                        remaining.discard(other)
+                        group.add(other)
+                        stack.append(other)
+        groups.append(group)
+    return groups
+
+
+def chain_path(group):
+    counter = {}
+    for edge in group:
+        for vertex in edge.verts:
+            counter[vertex] = counter.get(vertex, 0) + 1
+    ends = [vertex for vertex, value in counter.items() if value == 1]
+    if len(ends) != 2:
+        return None
+    path = [ordered(ends)[0]]
+    used = set()
+    current = path[0]
+    while True:
+        following = None
+        for edge in ordered(current.link_edges):
+            if edge in group and edge not in used:
+                following = edge
+                break
+        if following is None:
+            break
+        used.add(following)
+        current = following.other_vert(current)
+        path.append(current)
+    return path if len(used) == len(group) else None
+
+
+def on_rim(vertex):
+    return any(len(edge.link_faces) == 1 for edge in vertex.link_edges)
+
+
+def grid_rows(faces):
+    rows = []
+    for group in edge_chains(across_edges(faces)):
+        path = chain_path(group)
+        if path is None:
+            continue
+        if not on_rim(path[0]) or not on_rim(path[-1]):
+            continue
+        rows.append(path)
+    return rows
+
+
+def row_links(rows, faces):
+    holder = {}
+    for index, path in enumerate(rows):
+        for vertex in path:
+            holder.setdefault(vertex, set()).add(index)
+    weights = {}
+    for face in ordered(faces):
+        marks = set()
+        for vertex in face.verts:
+            marks |= holder.get(vertex, set())
+        for first in marks:
+            for second in marks:
+                if first != second:
+                    key = (first, second)
+                    weights[key] = weights.get(key, 0) + 1
+    links = {}
+    for (first, second), weight in weights.items():
+        links.setdefault(first, {})[second] = weight
+    return links
+
+
+def row_component(seed, links, seen):
+    stack = [seed]
+    group = {seed}
+    seen.add(seed)
+    while stack:
+        current = stack.pop()
+        for other in sorted(links.get(current, {})):
+            if other not in group:
+                group.add(other)
+                seen.add(other)
+                stack.append(other)
+    return group
+
+
+def row_distances(seed, group, links):
+    distance = {seed: 0}
+    queue = [seed]
+    while queue:
+        current = queue.pop(0)
+        for other in sorted(links.get(current, {})):
+            if other in group and other not in distance:
+                distance[other] = distance[current] + 1
+                queue.append(other)
+    return distance
+
+
+def row_chain(group, links):
+    first = row_distances(min(group), group, links)
+    far = max(sorted(first), key=lambda item: first[item])
+    second = row_distances(far, group, links)
+    return sorted(group, key=lambda item: (second.get(item, len(group)), item))
+
+
+def join_chains(pieces, centres):
+    pieces = sorted(pieces, key=lambda chain: (-len(chain), chain[0]))
+    order = list(pieces[0])
+    pending = list(pieces[1:])
+    while pending:
+        best = None
+        for position, chain in enumerate(pending):
+            for flipped in (False, True):
+                candidate = list(reversed(chain)) if flipped else list(chain)
+                head = (centres[order[0]] - centres[candidate[-1]]).length
+                tail = (centres[order[-1]] - centres[candidate[0]]).length
+                if best is None or head < best[0]:
+                    best = (head, position, candidate, True)
+                if tail < best[0]:
+                    best = (tail, position, candidate, False)
+        _, position, candidate, prepend = best
+        pending.pop(position)
+        order = candidate + order if prepend else order + candidate
+    return order
+
+
+def order_rows(rows, faces):
+    links = row_links(rows, faces)
+    centres = [sum((vertex.co for vertex in path), Vector()) / len(path)
+               for path in rows]
+    seen = set()
+    pieces = []
+    for index in range(len(rows)):
+        if index in seen:
+            continue
+        pieces.append(row_chain(row_component(index, links, seen), links))
+    order = join_chains(pieces, centres)
+    if len(order) != len(rows):
+        return None
+    return [rows[index] for index in order]
+
+
+def orient_rows(rows):
+    aligned = [list(rows[0])]
+    for path in rows[1:]:
+        head = aligned[-1][0]
+        tail = aligned[-1][-1]
+        straight = ((path[0].co - head.co).length + (path[-1].co - tail.co).length)
+        crossed = ((path[-1].co - head.co).length + (path[0].co - tail.co).length)
+        aligned.append(list(reversed(path)) if crossed < straight else list(path))
+    return aligned
+
+
+def cycle_run(cycle, place, start, finish):
+    count = len(cycle)
+    span = (place[finish] - place[start]) % count
+    return [cycle[(place[start] + step) % count] for step in range(span + 1)]
+
+
+def arc_between(cycle, place, start, finish, blocked):
+    if start not in place or finish not in place:
+        return None
+    forward = cycle_run(cycle, place, start, finish)
+    backward = cycle_run(cycle, place, finish, start)
+    backward.reverse()
+    options = [run for run in (forward, backward)
+               if not any(vertex in blocked for vertex in run[1:-1])]
+    if not options:
+        return None
+    return min(options, key=len)
+
+
+def fold_arc(arc, skip):
+    inner = [vertex for vertex in arc[1:-1] if vertex not in skip]
+    sections = []
+    low, high = 0, len(inner) - 1
+    while low < high:
+        sections.append([inner[low], inner[high]])
+        low += 1
+        high -= 1
+    if low == high:
+        sections.append([inner[low], inner[low]])
+    return sections
+
+
+def extract_ribbon(component, matrix):
+    faces = set()
+    for vertex in component:
+        faces.update(vertex.link_faces)
+    rows = grid_rows(faces)
+    if len(rows) < 2:
+        return None, "发片没有横向网格行，无法作为条带提取"
+    rows = order_rows(rows, faces)
+    if rows is None:
+        return None, "横向网格行排不成一条链"
+    rows = orient_rows(rows)
     cycle = boundary_cycle(component)
     if cycle is None:
-        return None, "边界不是单一闭环"
-    arclength = shell_arclength_field(component)
-    runs = split_cycle_into_rails(cycle, arclength)
-    if runs is None or len(runs) < 2:
-        return None, "无法切分出两条边界线"
-    runs.sort(key=run_length, reverse=True)
-    ratio = RAIL_LENGTH_RATIO * (0.4 if relaxed else 1.0)
-    allowance = BACKTRACK_ALLOWANCE * (4.0 if relaxed else 1.0)
-    if run_length(runs[1]) < run_length(runs[0]) * ratio:
-        return None, "两条边界线长度悬殊，可能是多分支"
-    for run in runs[:2]:
-        if backtrack_ratio(run, arclength) > allowance:
-            return None, "边界线折返，属于多分支头发，需要手动拆分"
-    left = [matrix @ vertex.co for vertex in runs[0]]
-    right = [matrix @ vertex.co for vertex in runs[1]]
-    if arclength.get(runs[0][0], 0.0) > arclength.get(runs[0][-1], 0.0):
-        left.reverse()
-    if arclength.get(runs[1][0], 0.0) > arclength.get(runs[1][-1], 0.0):
-        right.reverse()
-    if (left[0] - right[0]).length + (left[-1] - right[-1]).length > \
-       (left[0] - right[-1]).length + (left[-1] - right[0]).length:
-        right.reverse()
-    return (left, right), None
-
-
-def polyline_parameters(points):
-    parameters = [0.0]
-    for index in range(len(points) - 1):
-        parameters.append(parameters[-1] + (points[index + 1] - points[index]).length)
-    total = parameters[-1]
-    if total <= 1.0e-12:
-        return [0.0 for _ in parameters], 0.0
-    return [value / total for value in parameters], total
-
-
-def evaluate_polyline(points, parameters, target):
-    if target <= parameters[0]:
-        return points[0].copy()
-    if target >= parameters[-1]:
-        return points[-1].copy()
-    for index in range(len(parameters) - 1):
-        low, high = parameters[index], parameters[index + 1]
-        if low <= target <= high:
-            span = high - low
-            factor = 0.0 if span <= 1.0e-15 else (target - low) / span
-            return points[index] + (points[index + 1] - points[index]) * factor
-    return points[-1].copy()
-
-
-def pair_rails(left_points, right_points):
-    left_parameters, left_length = polyline_parameters(left_points)
-    right_parameters, right_length = polyline_parameters(right_points)
-    if left_length <= 1.0e-12 or right_length <= 1.0e-12:
-        return []
-    merged = []
-    for value in sorted(set(left_parameters + right_parameters)):
-        if merged and value - merged[-1] < 1.0e-4:
-            continue
-        merged.append(value)
-    return [(value,
-             evaluate_polyline(left_points, left_parameters, value),
-             evaluate_polyline(right_points, right_parameters, value))
-            for value in merged]
-
-
-def is_cut_end(outer, middle, inner, reference):
-    if outer >= reference * PINCH_TIP_FRACTION:
-        return False
-    if middle <= reference * PINCH_JUMP_FRACTION:
-        return False
-    return abs(middle - inner) < reference * PINCH_FLATNESS_FRACTION
-
-
-def open_pinched_rails(left, right):
-    for _ in range(4):
-        if len(left) < 5 or len(right) < 5:
-            break
-        sections = pair_rails(left, right)
-        if len(sections) < 4:
-            break
-        widths = [(entry[2] - entry[1]).length for entry in sections]
-        reference = max(widths)
-        if reference <= 1.0e-12:
-            break
-        if is_cut_end(widths[0], widths[1], widths[2], reference):
-            left = left[1:]
-            right = right[1:]
-            continue
-        if is_cut_end(widths[-1], widths[-2], widths[-3], reference):
-            left = left[:-1]
-            right = right[:-1]
-            continue
-        break
-    return left, right
+        return None, "发片边界不是单一闭环"
+    place = {vertex: index for index, vertex in enumerate(cycle)}
+    marks = set()
+    for path in rows:
+        marks.update(path)
+    head, tail = set(rows[0]), set(rows[-1])
+    lead = arc_between(cycle, place, rows[0][0], rows[0][-1], marks - head)
+    trail = arc_between(cycle, place, rows[-1][0], rows[-1][-1], marks - tail)
+    if lead is None or trail is None:
+        return None, "发片两端与横向网格行不吻合"
+    sections = list(reversed(fold_arc(lead, head))) + [list(path) for path in rows] +         fold_arc(trail, tail)
+    ladder = [[matrix @ vertex.co for vertex in path] for path in sections]
+    return ([path[0] for path in ladder], [path[-1] for path in ladder], ladder), None
 
 
 def strand_frames(cross_sections):
@@ -275,10 +414,10 @@ def strand_frames(cross_sections):
 
 
 class Strand:
-    def __init__(self, left, right, shell_faces, shell_indices, vertex_count):
-        left, right = open_pinched_rails(left, right)
+    def __init__(self, left, right, ladder, shell_faces, shell_indices, vertex_count):
         self.left = left
         self.right = right
+        self.ladders = [ladder]
         self.shells = [shell_faces]
         self.shell_indices = shell_indices
         self.vertex_count = vertex_count
@@ -286,10 +425,12 @@ class Strand:
         if self.centers[0].z < self.centers[-1].z:
             self.left.reverse()
             self.right.reverse()
+            self.ladders[0].reverse()
             self.rebuild()
 
     def rebuild(self):
-        self.cross_sections = pair_rails(self.left, self.right)
+        self.cross_sections = [(float(index), self.left[index], self.right[index])
+                               for index in range(len(self.left))]
         centers, widths, tangents, directions = strand_frames(self.cross_sections)
         self.centers = centers
         self.widths = widths
@@ -339,13 +480,16 @@ def submesh_from_faces(faces):
             if vertex not in lookup:
                 lookup[vertex] = mesh.verts.new(vertex.co)
     mesh.verts.ensure_lookup_table()
-    for face in faces:
+    for face in ordered(faces):
         try:
             mesh.faces.new([lookup[vertex] for vertex in face.verts])
         except ValueError:
             continue
     mesh.faces.ensure_lookup_table()
+    mesh.edges.ensure_lookup_table()
     mesh.verts.index_update()
+    mesh.edges.index_update()
+    mesh.faces.index_update()
     return mesh
 
 
@@ -366,13 +510,13 @@ def island_face_loops(island, matrix):
     return [[matrix @ vertex.co for vertex in face.verts] for face in ordered(faces)]
 
 
-def ribbon_from_faces(faces, matrix, relaxed=False):
+def ribbon_from_faces(faces, matrix):
     sub = submesh_from_faces(faces)
     islands = shell_islands(sub)
     if len(islands) != 1:
         sub.free()
         return None
-    ribbon, _ = extract_ribbon(islands[0], matrix, relaxed)
+    ribbon, _ = extract_ribbon(islands[0], matrix)
     if ribbon is None:
         sub.free()
         return None
@@ -628,8 +772,6 @@ def split_island_by_loops(island, matrix):
     for group in edge_connected_groups(faces):
         for piece in split_patch_by_loops(FacePatch(group), tips):
             entry = ribbon_from_faces(piece, matrix)
-            if entry is None:
-                entry = ribbon_from_faces(piece, matrix, True)
             if entry is not None:
                 entries.append(entry)
     return entries
@@ -667,13 +809,14 @@ def collect_strands(source_object, split_branches=True):
                              for face in ordered(missing)])
     candidates = []
     for shell_index, entry in entries:
-        left, right = entry[0]
-        candidates.append(Strand(left, right, entry[1], [shell_index], entry[2]))
+        left, right, ladder = entry[0]
+        candidates.append(Strand(left, right, ladder, entry[1], [shell_index], entry[2]))
     strands = []
     for candidate in sorted(candidates, key=lambda item: -len(item.centers)):
         merged = False
         for strand in strands:
             if rail_coincidence(strand, candidate) >= PAIR_COINCIDENCE_FRACTION:
+                strand.ladders.extend(candidate.ladders)
                 strand.shells.extend(candidate.shells)
                 strand.shell_indices.extend(candidate.shell_indices)
                 strand.vertex_count += candidate.vertex_count
@@ -685,109 +828,80 @@ def collect_strands(source_object, split_branches=True):
     return strands, rejected, leftover
 
 
-def slice_faces_with_plane(faces, origin, normal, limit):
-    points = []
-    for loop in faces:
-        signed = [(vertex - origin).dot(normal) for vertex in loop]
-        size = len(loop)
-        for index in range(size):
-            following = (index + 1) % size
-            first, second = signed[index], signed[following]
-            if (first > 0.0) == (second > 0.0):
-                continue
-            gap = first - second
-            if abs(gap) < 1.0e-15:
-                continue
-            hit = loop[index] + (loop[following] - loop[index]) * (first / gap)
-            if (hit - origin).length > limit:
-                continue
-            points.append(hit)
-    return points
-
-
-def simplify_polyline(points, tolerance):
-    if len(points) < 3:
-        return points
-    start, end = points[0], points[-1]
-    direction = (end[0] - start[0], end[1] - start[1])
-    length = math.hypot(direction[0], direction[1])
-    worst_index = 0
-    worst_distance = -1.0
-    for index in range(1, len(points) - 1):
-        point = points[index]
-        if length <= 1.0e-15:
-            distance = math.hypot(point[0] - start[0], point[1] - start[1])
-        else:
-            distance = abs(direction[0] * (start[1] - point[1]) -
-                           (start[0] - point[0]) * direction[1]) / length
-        if distance > worst_distance:
-            worst_index = index
-            worst_distance = distance
-    if worst_distance <= tolerance:
-        return [start, end]
-    return simplify_polyline(points[:worst_index + 1], tolerance)[:-1] + \
-        simplify_polyline(points[worst_index:], tolerance)
-
-
-def shell_cross_section(faces, origin, tangent, axis_x, axis_y, width):
-    points = slice_faces_with_plane(faces, origin, tangent, width * SLICE_LIMIT_FACTOR)
-    if len(points) < 2:
-        return None
+def project_section(points, origin, axis_x, axis_y, width):
     planar = []
     for point in points:
         offset = point - origin
         planar.append((offset.dot(axis_x) / width, offset.dot(axis_y) / width))
-    planar.sort(key=lambda entry: entry[0])
-    merged = []
-    for entry in planar:
-        if merged and math.hypot(entry[0] - merged[-1][0], entry[1] - merged[-1][1]) < SLICE_MERGE_FRACTION:
-            continue
-        merged.append(entry)
-    if len(merged) < 2:
-        return None
-    return merged
+    return planar
 
 
-def cross_section_at(strand, frames, index):
-    if strand.widths[index] <= 1.0e-9:
-        return None
-    axis_x, axis_y = frames[index]
-    polylines = []
-    for faces in strand.shells:
-        section = shell_cross_section(faces, strand.centers[index], strand.tangents[index],
-                                      axis_x, axis_y, strand.widths[index])
-        if section is None:
+def matching_section(ladder, first, second):
+    for path in ladder:
+        if len(path) < 2:
             continue
-        polylines.append(simplify_polyline(section, PROFILE_SIMPLIFY_FRACTION))
-    return polylines or None
+        head = (path[0] - first).length
+        tail = (path[-1] - second).length
+        if head < PAIR_WELD_DISTANCE and tail < PAIR_WELD_DISTANCE:
+            return path
+        if (path[-1] - first).length < PAIR_WELD_DISTANCE and                 (path[0] - second).length < PAIR_WELD_DISTANCE:
+            return list(reversed(path))
+    return None
+
+
+def resample_profile(points, count):
+    if count < 2 or len(points) < 2:
+        return [points[0]] * count
+    steps = [0.0]
+    for index in range(1, len(points)):
+        steps.append(steps[-1] + math.hypot(points[index][0] - points[index - 1][0],
+                                            points[index][1] - points[index - 1][1]))
+    total = steps[-1]
+    if total <= 1.0e-12:
+        return [points[0]] * count
+    samples = []
+    for step in range(count):
+        target = total * step / float(count - 1)
+        position = 1
+        while position < len(points) - 1 and steps[position] < target:
+            position += 1
+        span = steps[position] - steps[position - 1]
+        blend = 0.0 if span <= 1.0e-12 else (target - steps[position - 1]) / span
+        blend = max(0.0, min(1.0, blend))
+        first, second = points[position - 1], points[position]
+        samples.append((first[0] + (second[0] - first[0]) * blend,
+                        first[1] + (second[1] - first[1]) * blend))
+    return samples
 
 
 def strand_profile(strand, frames):
-    order = sorted(range(len(strand.widths)), key=lambda index: -strand.widths[index])
-    reference = max(strand.widths) if strand.widths else 0.0
-    survey = [index for index in order
-              if reference > 1.0e-12 and strand.widths[index] > reference * PROFILE_SURVEY_FRACTION]
-    tally = {}
-    cache = {}
-    for index in survey[:PROFILE_SURVEY_LIMIT]:
-        polylines = cross_section_at(strand, frames, index)
-        if polylines is None:
+    gathered = {}
+    for index in range(len(strand.widths)):
+        width = strand.widths[index]
+        if width <= 1.0e-9:
             continue
-        cache[index] = polylines
-        tally[len(polylines)] = tally.get(len(polylines), 0) + 1
-    if tally:
-        dominant = max(tally.items(), key=lambda entry: (entry[1], entry[0]))[0]
-        for index in survey:
-            polylines = cache.get(index)
-            if polylines is not None and len(polylines) == dominant:
-                return polylines
-    for index in order:
-        polylines = cache.get(index)
-        if polylines is None:
-            polylines = cross_section_at(strand, frames, index)
-        if polylines is not None:
-            return polylines
-    return None
+        axis_x, axis_y = frames[index]
+        origin = strand.centers[index]
+        for order, ladder in enumerate(strand.ladders):
+            path = matching_section(ladder, strand.left[index], strand.right[index])
+            if path is None or len(path) < 2:
+                continue
+            gathered.setdefault(order, []).append(
+                (width, project_section(path, origin, axis_x, axis_y, width)))
+    if not gathered:
+        return None
+    polylines = []
+    for order in sorted(gathered):
+        entries = gathered[order]
+        count = max(len(planar) for _, planar in entries)
+        total = sum(width for width, _ in entries)
+        blended = [[0.0, 0.0] for _ in range(count)]
+        for width, planar in entries:
+            for position, sample in enumerate(resample_profile(planar, count)):
+                blended[position][0] += sample[0] * width
+                blended[position][1] += sample[1] * width
+        polylines.append([(entry[0] / total, entry[1] / total) for entry in blended])
+    return polylines
 
 
 def decimate_indices(strand, tolerance):
