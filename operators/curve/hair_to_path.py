@@ -706,7 +706,8 @@ OPPOSITE_END_SPREAD = 0.5
 HAIRPIN_ANGLE = 110.0
 HAIRPIN_MARGIN = 0.2
 TIP_PREFERENCE = "min"
-TIP_LADDER_SLACK = 2
+TIP_LADDER_SLACK = 1
+PIECE_BALANCE_FLOOR = 0.55
 
 
 def corner_angle(face, vertex):
@@ -721,6 +722,52 @@ def corner_angle(face, vertex):
 
 def angle_sum(vertex):
     return math.degrees(sum(corner_angle(face, vertex) for face in vertex.link_faces))
+
+
+TIP_SHARP_ANGLE = 80.0
+TIP_CROTCH_ANGLE = 270.0
+TIP_BUILDER_ORDER = "partition_with_tips,grow_with_tips,grow_faces_from_tips"
+
+
+def boundary_path_peak(angles, count, first, second):
+    forward = [(first + step) % count for step in range((second - first) % count + 1)]
+    backward = [(second + step) % count for step in range((first - second) % count + 1)]
+    path = forward if len(forward) <= len(backward) else backward
+    inner = [angles[index] for index in path[1:-1]]
+    return max(inner) if inner else 0.0
+
+
+def tip_clusters(island):
+    cycle = boundary_cycle(island)
+    if cycle is None:
+        return None
+    angles = [angle_sum(vertex) for vertex in cycle]
+    marks = [index for index in range(len(cycle)) if angles[index] < TIP_SHARP_ANGLE]
+    if not marks:
+        return []
+    count = len(cycle)
+    parent = {index: index for index in marks}
+
+    def root(item):
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for first in range(len(marks)):
+        for second in range(first + 1, len(marks)):
+            if boundary_path_peak(angles, count, marks[first], marks[second]) < TIP_CROTCH_ANGLE:
+                low, high = root(marks[first]), root(marks[second])
+                if low != high:
+                    parent[low] = high
+    groups = {}
+    for index in marks:
+        groups.setdefault(root(index), []).append(index)
+    representatives = []
+    for members in groups.values():
+        best = min(members, key=lambda index: angles[index])
+        representatives.append(cycle[best])
+    return representatives
 
 
 def tip_vertices(island, limit=TIP_ANGLE_LIMIT):
@@ -819,8 +866,71 @@ def merge_to_target(entries, matrix, target):
 TIP_LIMIT_LADDER = (45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0)
 
 
-def try_partition(faces, island, matrix, limit):
-    tips = tip_vertices(island, limit)
+def grow_faces_from_tips(faces, matrix, tips):
+    if len(tips) < 2:
+        return None
+    centre = {}
+    for face in ordered(faces):
+        centre[face] = sum((vertex.co for vertex in face.verts), Vector()) / len(face.verts)
+    seeds = {}
+    for order, tip in enumerate(tips):
+        best = None
+        for face in tip.link_faces:
+            if face not in centre:
+                continue
+            distance = (centre[face] - tip.co).length
+            if best is None or distance < best[0]:
+                best = (distance, face)
+        if best is None:
+            return None
+        if best[1] in seeds:
+            return None
+        seeds[best[1]] = order
+    queue = []
+    label = {}
+    for face, order in seeds.items():
+        label[face] = order
+        heapq.heappush(queue, (0.0, face.index, face))
+    cost = {face: 0.0 for face in seeds}
+    while queue:
+        value, _, face = heapq.heappop(queue)
+        if value > cost.get(face, 1.0e30) + 1.0e-12:
+            continue
+        for edge in ordered(face.edges):
+            for neighbour in ordered(edge.link_faces):
+                if neighbour is face or neighbour not in centre:
+                    continue
+                step = value + (centre[neighbour] - centre[face]).length
+                if step < cost.get(neighbour, 1.0e30) - 1.0e-12:
+                    cost[neighbour] = step
+                    label[neighbour] = label[face]
+                    heapq.heappush(queue, (step, neighbour.index, neighbour))
+    if len(label) < len(faces):
+        return None
+    groups = {}
+    for face, order in label.items():
+        groups.setdefault(order, set()).add(face)
+    if len(groups) != len(tips):
+        return None
+    produced = []
+    for order in sorted(groups):
+        entry = ribbon_from_faces(groups[order], matrix)
+        if entry is None:
+            return None
+        produced.append(entry)
+    return produced
+
+
+def partition_with_tips(faces, island, matrix, tips):
+    return try_partition(faces, island, matrix, None, tips)
+
+
+def grow_with_tips(faces, island, matrix, tips):
+    return grow_from_tips(faces, island, matrix, None, tips)
+
+
+def try_partition(faces, island, matrix, limit, marks=None):
+    tips = marks if marks is not None else tip_vertices(island, limit)
     target = len(tips)
     if target < 2:
         return None, target
@@ -862,6 +972,8 @@ def try_partition(faces, island, matrix, limit):
             score = max(ribbon_width(entry) for entry in ribbons)
             if best is None or score < best[0]:
                 best = (score, ribbons)
+    if marks is not None:
+        return best[1] if best else None
     return (best[1] if best else None), target
 
 
@@ -918,8 +1030,8 @@ def hairpin_split(entry, matrix):
     return best[1] if best else None
 
 
-def grow_from_tips(faces, island, matrix, limit):
-    marks = tip_vertices(island, limit)
+def grow_from_tips(faces, island, matrix, limit, given=None):
+    marks = given if given is not None else tip_vertices(island, limit)
     if len(marks) < 2:
         return None
     rungs = classify_rungs(faces)
@@ -973,41 +1085,78 @@ def grow_from_tips(faces, island, matrix, limit):
     return ribbons
 
 
+def solution_cost(pieces):
+    return max(ribbon_width(entry) for entry in pieces)
+
+
+def solution_balance(pieces):
+    widths = [ribbon_width(entry) for entry in pieces]
+    top = max(widths)
+    if top <= 1.0e-12:
+        return 0.0
+    return min(widths) / top
+
+
 def split_by_tips_ladder(island, matrix):
     faces = set()
     for vertex in island:
         faces.update(vertex.link_faces)
     whole = ribbon_from_faces(faces, matrix)
-    tips = tip_vertices(island, TIP_ANGLE_LIMIT)
+    clustered = tip_clusters(island)
+    tips = clustered if clustered is not None else tip_vertices(island, TIP_ANGLE_LIMIT)
     if len(tips) <= 1 and whole is not None:
         return [whole]
     if len(tips) >= 2 and whole is not None and tips_at_opposite_ends(whole, tips, matrix):
         folded = hairpin_split(whole, matrix)
         return folded if folded else [whole]
     solutions = []
+    if len(tips) == 1 and whole is None:
+        loose = ribbon_from_faces(faces, matrix, True)
+        if loose is not None:
+            return [loose]
+    if len(tips) >= 2:
+        options = []
+        for builder in (partition_with_tips, grow_with_tips):
+            produced = builder(faces, island, matrix, tips)
+            if produced:
+                options.append((builder.__name__, produced))
+        produced = grow_faces_from_tips(faces, matrix, tips)
+        if produced:
+            options.append(("grow_faces_from_tips", produced))
+        if options:
+            if TIP_BUILDER_ORDER == "cost":
+                options.sort(key=lambda entry: solution_cost(entry[1]))
+            else:
+                rank = TIP_BUILDER_ORDER.split(",")
+                options.sort(key=lambda entry: rank.index(entry[0])
+                             if entry[0] in rank else len(rank))
+            return options[0][1]
     ceiling = len(tips)
     for limit in TIP_LIMIT_LADDER:
         if len(tip_vertices(island, limit)) > ceiling + TIP_LADDER_SLACK:
             continue
         pieces, target = try_partition(faces, island, matrix, limit)
         if pieces:
-            solutions.append((len(pieces), pieces))
+            solutions.append((solution_cost(pieces), len(pieces), pieces))
             continue
         grown = grow_from_tips(faces, island, matrix, limit)
         if grown:
-            solutions.append((len(grown), grown))
+            solutions.append((solution_cost(grown), len(grown), grown))
     if solutions:
-        if TIP_PREFERENCE == "max":
-            solutions.sort(key=lambda entry: -entry[0])
-        elif TIP_PREFERENCE == "modal":
-            tally = {}
-            for count, _ in solutions:
-                tally[count] = tally.get(count, 0) + 1
-            favourite = max(tally.items(), key=lambda entry: (entry[1], -entry[0]))[0]
-            solutions = [entry for entry in solutions if entry[0] == favourite]
+        if TIP_PREFERENCE == "balanced":
+            eligible = [entry for entry in solutions
+                        if solution_balance(entry[2]) >= PIECE_BALANCE_FLOOR]
+            if eligible:
+                eligible.sort(key=lambda entry: (-entry[1], entry[0]))
+                return eligible[0][2]
+            solutions.sort(key=lambda entry: entry[1])
+        elif TIP_PREFERENCE == "narrow":
+            solutions.sort(key=lambda entry: (entry[0], entry[1]))
+        elif TIP_PREFERENCE == "max":
+            solutions.sort(key=lambda entry: -entry[1])
         else:
-            solutions.sort(key=lambda entry: entry[0])
-        return solutions[0][1]
+            solutions.sort(key=lambda entry: entry[1])
+        return solutions[0][2]
     if whole is not None:
         return [whole]
     loose = fallback(faces, matrix)
