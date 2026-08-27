@@ -646,30 +646,31 @@ def split_faces(faces, matrix, depth):
     direct = ribbon_from_faces(faces, matrix)
     if direct is not None:
         return [direct]
-    if depth <= 0:
-        return []
-    found = candidate_splits(faces, matrix)
-    if found:
-        return [found[0][1], found[0][2]]
-    rungs = classify_rungs(faces)
-    if not rungs:
-        return []
-    columns = columns_of(faces, rungs)
-    if len(columns) < 2:
-        return []
-    links = column_links(columns)
-    for order in column_orders(columns, links):
-        for cut in range(1, len(columns)):
-            left = set()
-            right = set()
-            for position, index in enumerate(order):
-                (left if position < cut else right).update(columns[index])
-            if not left or not right:
-                continue
-            result = split_faces(left, matrix, depth - 1) + split_faces(right, matrix, depth - 1)
-            if result:
-                return result
-    return []
+    if depth > 0:
+        found = candidate_splits(faces, matrix)
+        if found:
+            return [found[0][1], found[0][2]]
+        rungs = classify_rungs(faces)
+        columns = columns_of(faces, rungs) if rungs else []
+        if len(columns) >= 2:
+            links = column_links(columns)
+            for order in column_orders(columns, links):
+                for cut in range(1, len(columns)):
+                    left = set()
+                    right = set()
+                    for position, index in enumerate(order):
+                        (left if position < cut else right).update(columns[index])
+                    if not left or not right:
+                        continue
+                    first = split_faces(left, matrix, depth - 1)
+                    if not first:
+                        continue
+                    second = split_faces(right, matrix, depth - 1)
+                    if not second:
+                        continue
+                    return first + second
+    loose = ribbon_from_faces(faces, matrix, True)
+    return [loose] if loose is not None else []
 
 
 def split_island(island, matrix):
@@ -1100,8 +1101,17 @@ def collect_strands(source_object, split_branches=True):
             rejected.append((shell_index, len(island), "无法提取为发片条带"))
             leftover.append(loops)
             continue
+        covered = set()
         for entry in found:
+            covered |= entry[3]
             entries.append((shell_index, entry))
+        island_faces = set()
+        for vertex in island:
+            island_faces.update(vertex.link_faces)
+        missing = island_faces - covered
+        if missing and covered:
+            leftover.append([[matrix @ vertex.co for vertex in face.verts]
+                             for face in ordered(missing)])
     candidates = []
     for shell_index, entry in entries:
         left, right = entry[0]
