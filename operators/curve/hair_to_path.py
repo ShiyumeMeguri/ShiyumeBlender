@@ -355,16 +355,47 @@ def arc_between(cycle, place, start, finish, blocked):
     return min(options, key=len)
 
 
-def fold_arc(arc, skip):
-    inner = [vertex for vertex in arc[1:-1] if vertex not in skip]
+def row_centre(row):
+    return (row[0].co + row[-1].co) * 0.5
+
+
+def split_cap(arc, row, tangent):
+    inner = [vertex for vertex in arc[1:-1] if vertex not in set(row)]
+    axis = row[-1].co - row[0].co
+    if not inner or axis.length <= 1.0e-12 or tangent is None:
+        return [], [], inner
+    axis = axis.normalized()
+    centre = row_centre(row)
+    flat = []
+    for vertex in inner:
+        offset = vertex.co - centre
+        flat.append(abs(offset.dot(axis)) > abs(offset.dot(tangent)))
+    low = 0
+    while low < len(inner) and flat[low]:
+        low += 1
+    high = len(inner) - 1
+    while high >= low and flat[high]:
+        high -= 1
+    return inner[:low], inner[high + 1:], inner[low:high + 1]
+
+
+def fold_arc(inner, outward):
     sections = []
     low, high = 0, len(inner) - 1
     while low < high:
         sections.append([inner[low], inner[high]])
         low += 1
         high -= 1
-    if low == high:
-        sections.append([inner[low], inner[low]])
+    if low != high:
+        return sections
+    apex = inner[low]
+    if sections and outward is not None:
+        last = sections[-1]
+        offset = apex.co - (last[0].co + last[-1].co) * 0.5
+        if offset.dot(outward) <= 0.0:
+            last.insert(1, apex)
+            return sections
+    sections.append([apex, apex])
     return sections
 
 
@@ -391,7 +422,18 @@ def extract_ribbon(component, matrix):
     trail = arc_between(cycle, place, rows[-1][0], rows[-1][-1], marks - tail)
     if lead is None or trail is None:
         return None, "发片两端与横向网格行不吻合"
-    sections = list(reversed(fold_arc(lead, head))) + [list(path) for path in rows] +         fold_arc(trail, tail)
+    ladder = [list(path) for path in rows]
+    forward = row_centre(rows[1]) - row_centre(rows[0])
+    backward = row_centre(rows[-1]) - row_centre(rows[-2])
+    forward = forward.normalized() if forward.length > 1.0e-12 else None
+    backward = backward.normalized() if backward.length > 1.0e-12 else None
+    left, right, middle = split_cap(lead, rows[0], forward)
+    ladder[0] = list(reversed(left)) + ladder[0] + list(reversed(right))
+    opening = list(reversed(fold_arc(middle, -forward if forward else None)))
+    left, right, middle = split_cap(trail, rows[-1], backward)
+    ladder[-1] = list(reversed(left)) + ladder[-1] + list(reversed(right))
+    closing = fold_arc(middle, backward)
+    sections = opening + ladder + closing
     ladder = [[matrix @ vertex.co for vertex in path] for path in sections]
     return ([path[0] for path in ladder], [path[-1] for path in ladder], ladder), None
 
