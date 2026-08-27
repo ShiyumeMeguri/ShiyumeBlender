@@ -727,6 +727,7 @@ def angle_sum(vertex):
 TIP_SHARP_ANGLE = 80.0
 TIP_CROTCH_ANGLE = 270.0
 TIP_BUILDER_ORDER = "smooth"
+REFINE_BOUNDARIES = False
 
 
 def boundary_path_peak(angles, count, first, second):
@@ -1110,6 +1111,86 @@ def entry_balance(entry):
     return abs(len(left) - len(right)) / float(max(len(left), len(right), 1))
 
 
+def refine_boundaries(pieces, matrix, rounds=2):
+    if len(pieces) < 2:
+        return pieces
+    buckets = [set(entry[3]) for entry in pieces]
+    current = list(pieces)
+    best = solution_smoothness(current)
+    for _ in range(rounds):
+        improved = False
+        for source in range(len(buckets)):
+            for face in ordered(list(buckets[source])):
+                neighbours = set()
+                for edge in face.edges:
+                    for other in edge.link_faces:
+                        for index in range(len(buckets)):
+                            if index != source and other in buckets[index]:
+                                neighbours.add(index)
+                for target in sorted(neighbours):
+                    if len(buckets[source]) <= 3:
+                        continue
+                    buckets[source].discard(face)
+                    buckets[target].add(face)
+                    trial = []
+                    ok = True
+                    for bucket in buckets:
+                        entry = ribbon_from_faces(bucket, matrix)
+                        if entry is None:
+                            ok = False
+                            break
+                        trial.append(entry)
+                    score = solution_smoothness(trial) if ok else 1.0e9
+                    if ok and score < best - 1.0e-6:
+                        best = score
+                        current = trial
+                        improved = True
+                        break
+                    buckets[target].discard(face)
+                    buckets[source].add(face)
+                else:
+                    continue
+                break
+        if not improved:
+            break
+    return current
+
+
+def snap_to_columns(pieces, faces, matrix):
+    if len(pieces) < 2:
+        return None
+    rungs = classify_rungs(faces)
+    if not rungs:
+        return None
+    columns = columns_of(faces, rungs)
+    if len(columns) < len(pieces):
+        return None
+    owner = {}
+    for index, entry in enumerate(pieces):
+        for face in entry[3]:
+            owner[face] = index
+    buckets = [set() for _ in pieces]
+    for column in columns:
+        votes = {}
+        for face in column:
+            position = owner.get(face)
+            if position is not None:
+                votes[position] = votes.get(position, 0) + 1
+        if not votes:
+            return None
+        winner = max(votes.items(), key=lambda entry: (entry[1], -entry[0]))[0]
+        buckets[winner].update(column)
+    produced = []
+    for bucket in buckets:
+        if not bucket:
+            return None
+        entry = ribbon_from_faces(bucket, matrix)
+        if entry is None:
+            return None
+        produced.append(entry)
+    return produced
+
+
 def solution_smoothness(pieces):
     return max(entry_smoothness(entry) for entry in pieces)
 
@@ -1135,9 +1216,8 @@ def split_by_tips_ladder(island, matrix):
     tips = clustered if clustered is not None else tip_vertices(island, TIP_ANGLE_LIMIT)
     if len(tips) <= 1 and whole is not None:
         return [whole]
-    if len(tips) >= 2 and whole is not None and tips_at_opposite_ends(whole, tips, matrix):
-        folded = hairpin_split(whole, matrix)
-        return folded if folded else [whole]
+    opposite = (len(tips) >= 2 and whole is not None
+                and tips_at_opposite_ends(whole, tips, matrix))
     solutions = []
     if len(tips) == 1 and whole is None:
         loose = ribbon_from_faces(faces, matrix, True)
@@ -1152,6 +1232,14 @@ def split_by_tips_ladder(island, matrix):
         produced = grow_faces_from_tips(faces, matrix, tips)
         if produced:
             options.append(("grow_faces_from_tips", produced))
+        if opposite:
+            folded = hairpin_split(whole, matrix)
+            if folded:
+                options.append(("hairpin_split", folded))
+        for label, produced in list(options):
+            snapped = snap_to_columns(produced, faces, matrix)
+            if snapped and len(snapped) == len(produced):
+                options.append((label + "_snapped", snapped))
         if options:
             if TIP_BUILDER_ORDER == "smooth":
                 options.sort(key=lambda entry: solution_smoothness(entry[1]))
@@ -1164,7 +1252,13 @@ def split_by_tips_ladder(island, matrix):
                 rank = TIP_BUILDER_ORDER.split(",")
                 options.sort(key=lambda entry: rank.index(entry[0])
                              if entry[0] in rank else len(rank))
-            return options[0][1]
+            chosen = options[0][1]
+            if REFINE_BOUNDARIES and len(chosen) >= 2:
+                chosen = refine_boundaries(chosen, matrix)
+            return chosen
+    if opposite:
+        folded = hairpin_split(whole, matrix)
+        return folded if folded else [whole]
     ceiling = len(tips)
     for limit in TIP_LIMIT_LADDER:
         if len(tip_vertices(island, limit)) > ceiling + TIP_LADDER_SLACK:
