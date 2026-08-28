@@ -1473,6 +1473,8 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                         profile_collection.objects.link(profile_object)
                         shared.append((samples, profile_object))
                     curve_object.data.bevel_object = profile_object
+                    curve_object.parent = profile_object
+                    curve_object.matrix_parent_inverse =                         profile_object.matrix_world.inverted()
                     for material in source.data.materials:
                         curve_object.data.materials.append(material)
                     bpy.data.objects.remove(placeholder)
