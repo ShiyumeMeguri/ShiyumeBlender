@@ -1029,37 +1029,17 @@ def decimate_indices(strand, tolerance):
     return [0] + walk(0, len(samples) - 1) + [len(samples) - 1]
 
 
-def mirror_across_chord(first, last, point):
-    axis_x = last[0] - first[0]
-    axis_y = last[1] - first[1]
-    length = math.hypot(axis_x, axis_y)
-    if length <= 1.0e-12:
-        return (point[0], -point[1])
-    axis_x /= length
-    axis_y /= length
-    offset_x = point[0] - first[0]
-    offset_y = point[1] - first[1]
-    along = offset_x * axis_x + offset_y * axis_y
-    across = offset_x * (-axis_y) + offset_y * axis_x
-    return (first[0] + axis_x * along + axis_y * across,
-            first[1] + axis_y * along - axis_x * across)
-
-
 def solid_outline(polylines):
     usable = [line for line in polylines if len(line) >= 2]
     if not usable:
         return None
-    start = (sum(line[0][0] for line in usable) / len(usable),
-             sum(line[0][1] for line in usable) / len(usable))
-    finish = (sum(line[-1][0] for line in usable) / len(usable),
-              sum(line[-1][1] for line in usable) / len(usable))
     ranked = sorted(usable, key=lambda line: sum(point[1] for point in line) / len(line))
-    front = list(ranked[0][1:-1])
+    front = list(ranked[0])
     if len(ranked) > 1:
-        back = list(reversed(ranked[-1][1:-1]))
+        back = list(ranked[-1])
     else:
-        back = [mirror_across_chord(start, finish, point) for point in reversed(front)]
-    return [start] + front + [finish] + back
+        back = [(point[0], -point[1]) for point in front]
+    return front + list(reversed(back))
 
 
 def create_profile_object(name, polylines, closed=False):
@@ -1336,6 +1316,12 @@ def ensure_collection(scene, name):
     return collection
 
 
+def exclude_collection(view_layer, collection):
+    layer = view_layer.layer_collection.children.get(collection.name)
+    if layer is not None:
+        layer.exclude = True
+
+
 class SHIYUME_OT_HairToPath(bpy.types.Operator):
     """把头发面片转换成 Path（NURBS）曲线。
     每条头发单独一条曲线，并用它自己的横截面作为 Bevel Object，
@@ -1435,8 +1421,6 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     profile_object = create_profile_object(
                         label + "_Profile", polylines, self.solid_section)
                     profile_collection.objects.link(profile_object)
-                    profile_object.hide_viewport = True
-                    profile_object.hide_render = True
                     curve_object.data.bevel_object = profile_object
                     for material in source.data.materials:
                         curve_object.data.materials.append(material)
@@ -1446,6 +1430,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
             bpy.data.objects.remove(probe)
 
         depsgraph.update()
+        exclude_collection(context.view_layer, profile_collection)
         ranked = sorted(residuals)
         median = ranked[len(ranked) // 2] if ranked else 0.0
         worst = ranked[-1] if ranked else 0.0
