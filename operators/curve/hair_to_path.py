@@ -1357,6 +1357,28 @@ def exclude_collection(view_layer, collection):
         layer.exclude = True
 
 
+def discard_object(obj):
+    data = obj.data
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if data is None or data.users:
+        return
+    if isinstance(data, bpy.types.Curve):
+        bpy.data.curves.remove(data)
+    elif isinstance(data, bpy.types.Mesh):
+        bpy.data.meshes.remove(data)
+
+
+def purge_collections(collections, keep):
+    removed = 0
+    for collection in collections:
+        for obj in list(collection.objects):
+            if obj in keep:
+                continue
+            discard_object(obj)
+            removed += 1
+    return removed
+
+
 class SHIYUME_OT_HairToPath(bpy.types.Operator):
     """把头发面片转换成 Path（NURBS）曲线。
     每条头发单独一条曲线，并用它自己的横截面作为 Bevel Object，
@@ -1414,6 +1436,8 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         curve_collection = ensure_collection(scene, "HairToPath_Curves")
         profile_collection = ensure_collection(scene, "HairToPath_Profiles")
         leftover_collection = ensure_collection(scene, "HairToPath_NeedManualSplit")
+        purged = purge_collections(
+            (curve_collection, profile_collection, leftover_collection), set(sources))
 
         probe = create_probe_object("HairToPath_FrameProbe")
         scene.collection.objects.link(probe)
@@ -1448,15 +1472,15 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     residuals.append(residual)
                     polylines = strand_profile(strand, frames_for_strand(strand, readings))
                     if polylines is None:
-                        bpy.data.objects.remove(placeholder)
-                        bpy.data.objects.remove(curve_object)
+                        discard_object(placeholder)
+                        discard_object(curve_object)
                         skipped += 1
                         continue
                     if self.solid_section:
                         outline = solid_outline(polylines)
                         if outline is None:
-                            bpy.data.objects.remove(placeholder)
-                            bpy.data.objects.remove(curve_object)
+                            discard_object(placeholder)
+                            discard_object(curve_object)
                             skipped += 1
                             continue
                         polylines = [outline]
@@ -1477,18 +1501,18 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     curve_object.matrix_parent_inverse =                         profile_object.matrix_world.inverted()
                     for material in source.data.materials:
                         curve_object.data.materials.append(material)
-                    bpy.data.objects.remove(placeholder)
+                    discard_object(placeholder)
                     built += 1
         finally:
-            bpy.data.objects.remove(probe)
+            discard_object(probe)
 
         depsgraph.update()
         exclude_collection(context.view_layer, profile_collection)
         ranked = sorted(residuals)
         median = ranked[len(ranked) // 2] if ranked else 0.0
         worst = ranked[-1] if ranked else 0.0
-        self.report({'INFO'}, "生成 %d 条路径曲线，%d 个截面，跳过 %d 片，"
-                    "Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
-                        built, len(shared), skipped,
+        self.report({'INFO'}, "清理旧结果 %d 个，生成 %d 条路径曲线，%d 个截面，"
+                    "跳过 %d 片，Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
+                        purged, built, len(shared), skipped,
                         math.degrees(median), math.degrees(worst)))
         return {'FINISHED'} if built else {'CANCELLED'}
