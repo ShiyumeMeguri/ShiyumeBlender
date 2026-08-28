@@ -1029,7 +1029,40 @@ def decimate_indices(strand, tolerance):
     return [0] + walk(0, len(samples) - 1) + [len(samples) - 1]
 
 
-def create_profile_object(name, polylines):
+def mirror_across_chord(first, last, point):
+    axis_x = last[0] - first[0]
+    axis_y = last[1] - first[1]
+    length = math.hypot(axis_x, axis_y)
+    if length <= 1.0e-12:
+        return (point[0], -point[1])
+    axis_x /= length
+    axis_y /= length
+    offset_x = point[0] - first[0]
+    offset_y = point[1] - first[1]
+    along = offset_x * axis_x + offset_y * axis_y
+    across = offset_x * (-axis_y) + offset_y * axis_x
+    return (first[0] + axis_x * along + axis_y * across,
+            first[1] + axis_y * along - axis_x * across)
+
+
+def solid_outline(polylines):
+    usable = [line for line in polylines if len(line) >= 2]
+    if not usable:
+        return None
+    start = (sum(line[0][0] for line in usable) / len(usable),
+             sum(line[0][1] for line in usable) / len(usable))
+    finish = (sum(line[-1][0] for line in usable) / len(usable),
+              sum(line[-1][1] for line in usable) / len(usable))
+    ranked = sorted(usable, key=lambda line: sum(point[1] for point in line) / len(line))
+    front = list(ranked[0][1:-1])
+    if len(ranked) > 1:
+        back = list(reversed(ranked[-1][1:-1]))
+    else:
+        back = [mirror_across_chord(start, finish, point) for point in reversed(front)]
+    return [start] + front + [finish] + back
+
+
+def create_profile_object(name, polylines, closed=False):
     curve = bpy.data.curves.new(name, 'CURVE')
     curve.dimensions = '2D'
     for polyline in polylines:
@@ -1037,7 +1070,7 @@ def create_profile_object(name, polylines):
         spline.points.add(len(polyline) - 1)
         for index, point in enumerate(polyline):
             spline.points[index].co = (point[0], point[1], 0.0, 1.0)
-        spline.use_cyclic_u = False
+        spline.use_cyclic_u = closed
     return bpy.data.objects.new(name, curve)
 
 
@@ -1334,6 +1367,12 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         description="把多分支等无法转换的面片原样导出成网格，方便手动拆分后重跑",
         default=True)
 
+    solid_section: bpy.props.BoolProperty(
+        name="实心截面",
+        description="把截面合成一条闭合环；只有单面的发片用弦镜像出反面顶点，"
+                    "两面发片保留各自的端点不缝合",
+        default=True)
+
     @classmethod
     def poll(cls, context):
         return any(obj.type == 'MESH' for obj in context.selected_objects)
@@ -1385,7 +1424,16 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                         bpy.data.objects.remove(curve_object)
                         skipped += 1
                         continue
-                    profile_object = create_profile_object(label + "_Profile", polylines)
+                    if self.solid_section:
+                        outline = solid_outline(polylines)
+                        if outline is None:
+                            bpy.data.objects.remove(placeholder)
+                            bpy.data.objects.remove(curve_object)
+                            skipped += 1
+                            continue
+                        polylines = [outline]
+                    profile_object = create_profile_object(
+                        label + "_Profile", polylines, self.solid_section)
                     profile_collection.objects.link(profile_object)
                     profile_object.hide_viewport = True
                     profile_object.hide_render = True
