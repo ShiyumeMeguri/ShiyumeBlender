@@ -1029,6 +1029,41 @@ def decimate_indices(strand, tolerance):
     return [0] + walk(0, len(samples) - 1) + [len(samples) - 1]
 
 
+PROFILE_SAMPLES = 9
+
+
+def profile_envelope(polylines):
+    lower = []
+    upper = []
+    for step in range(PROFILE_SAMPLES):
+        target = -0.5 + step / float(PROFILE_SAMPLES - 1)
+        hits = []
+        for polyline in polylines:
+            for index in range(len(polyline)):
+                first = polyline[index]
+                second = polyline[(index + 1) % len(polyline)]
+                if abs(second[0] - first[0]) < 1.0e-12:
+                    if abs(first[0] - target) < 1.0e-9:
+                        hits.extend([first[1], second[1]])
+                    continue
+                low, high = min(first[0], second[0]), max(first[0], second[0])
+                if target < low - 1.0e-9 or target > high + 1.0e-9:
+                    continue
+                blend = (target - first[0]) / (second[0] - first[0])
+                hits.append(first[1] + (second[1] - first[1]) * blend)
+        if not hits:
+            hits = [0.0]
+        lower.append(min(hits))
+        upper.append(max(hits))
+    return lower + upper
+
+
+def profile_difference(first, second):
+    gap = max(abs(first[index] - second[index]) for index in range(len(first)))
+    reach = max(max(first) - min(first), max(second) - min(second), 1.0e-9)
+    return gap / reach
+
+
 def solid_outline(polylines):
     usable = [line for line in polylines if len(line) >= 2]
     if not usable:
@@ -1355,9 +1390,15 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
 
     solid_section: bpy.props.BoolProperty(
         name="实心截面",
-        description="把截面合成一条闭合环；只有单面的发片用弦镜像出反面顶点，"
-                    "两面发片保留各自的端点不缝合",
+        description="把截面合成一条闭合环；只有单面的发片镜像出反面顶点，"
+                    "正反两端的顶点各自保留不合并",
         default=True)
+
+    profile_similarity: bpy.props.FloatProperty(
+        name="截面合并阈值",
+        description="两条发丝的截面形状差异小于该比例时共用同一个 Profile，"
+                    "0 表示每根都独立",
+        default=0.30, min=0.0, max=1.0, subtype='FACTOR')
 
     @classmethod
     def poll(cls, context):
@@ -1381,6 +1422,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         built = 0
         skipped = 0
         residuals = []
+        shared = []
         try:
             for source in sources:
                 strands, rejected, leftover = collect_strands(source, self.split_branches)
@@ -1418,9 +1460,18 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                             skipped += 1
                             continue
                         polylines = [outline]
-                    profile_object = create_profile_object(
-                        label + "_Profile", polylines, self.solid_section)
-                    profile_collection.objects.link(profile_object)
+                    samples = profile_envelope(polylines)
+                    profile_object = None
+                    for stored, existing in shared:
+                        if profile_difference(stored, samples) <= self.profile_similarity:
+                            profile_object = existing
+                            break
+                    if profile_object is None:
+                        profile_object = create_profile_object(
+                            "HairToPath_Profile_%02d" % len(shared),
+                            polylines, self.solid_section)
+                        profile_collection.objects.link(profile_object)
+                        shared.append((samples, profile_object))
                     curve_object.data.bevel_object = profile_object
                     for material in source.data.materials:
                         curve_object.data.materials.append(material)
@@ -1434,6 +1485,8 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         ranked = sorted(residuals)
         median = ranked[len(ranked) // 2] if ranked else 0.0
         worst = ranked[-1] if ranked else 0.0
-        self.report({'INFO'}, "生成 %d 条路径曲线，跳过 %d 片，Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
-            built, skipped, math.degrees(median), math.degrees(worst)))
+        self.report({'INFO'}, "生成 %d 条路径曲线，%d 个截面，跳过 %d 片，"
+                    "Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
+                        built, len(shared), skipped,
+                        math.degrees(median), math.degrees(worst)))
         return {'FINISHED'} if built else {'CANCELLED'}
