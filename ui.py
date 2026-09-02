@@ -1,3 +1,5 @@
+import os
+
 import bpy
 
 
@@ -32,7 +34,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
             layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
             layout.operator("shiyume.clear_empty", icon="X")
-            layout.operator("shiyume.clear_zero_vgs", icon="GROUP_VERTEX")
+            layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
 
             layout.separator()
             layout.label(text="头发")
@@ -48,7 +50,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.grid_cut", icon="MOD_ARRAY")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
-            layout.operator("shiyume.clear_zero_vgs", icon="X")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
             layout.operator("shiyume.match_weights_active", icon="VERTEXSEL")
             layout.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
@@ -167,12 +168,60 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
         col = layout.column(align=True)
         col.label(text="顶点组/权重")
         col.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
-        col.operator("shiyume.clear_zero_vgs", icon="X")
         col.operator("shiyume.weight_prune", icon="WPAINT_HLT")
         col.operator("shiyume.match_weights_active", icon="VERTEXSEL")
         col.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
         col.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
         col.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
+
+
+class SHIYUME_PT_CommonMesh(bpy.types.Panel):
+    """共用网格同步。放在 Item 页而不是 Shiyume 页: 它是"看当前选中的这个物体
+    绑到哪儿、推一下拉一下"，属于物体属性的即时查看，和 Item 页里其它内容
+    (变换、尺寸) 是同一类东西，用的时候不该再切标签页。"""
+    bl_label = "共用网格 (按需同步)"
+    bl_idname = "SHIYUME_PT_CommonMesh"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Item'
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.active_object.type == 'MESH'
+
+    def draw(self, context):
+        from .operators.mesh.common_sync import binding_of
+
+        layout = self.layout
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            layout.label(text="先选中一个网格物体", icon='INFO')
+            return
+
+        binding = binding_of(obj)
+        if binding is None:
+            layout.label(text="%s 未绑定共用来源" % obj.name, icon='UNLINKED')
+            layout.operator("shiyume.common_bind", icon='FILE_BLEND')
+            return
+
+        path, mesh_name = binding
+        box = layout.box()
+        box.label(text=obj.name, icon='OUTLINER_OB_MESH')
+        box.label(text="→ %s" % os.path.basename(path), icon='FILE_BLEND')
+        box.label(text="   数据块: %s" % mesh_name, icon='MESH_DATA')
+        if not os.path.isfile(path):
+            box.label(text="来源文件不存在！", icon='ERROR')
+
+        col = layout.column(align=True)
+        col.enabled = os.path.isfile(path)
+        col.operator("shiyume.common_push", icon='EXPORT')
+        col.operator("shiyume.common_pull", icon='IMPORT')
+        row = layout.row(align=True)
+        row.operator("shiyume.common_bind", text="改绑到别的文件", icon='FILE_BLEND')
+        pick = row.operator("shiyume.common_bind_pick", text="换数据块", icon='MESH_DATA')
+        pick.filepath = path
+        layout.operator("shiyume.common_unbind", icon='X')
+        layout.label(text="网格始终是本地的，随时可编辑", icon='CHECKMARK')
 
 
 class SHIYUME_PT_Shader(bpy.types.Panel):
@@ -319,6 +368,7 @@ _PANEL_CLASSES = (
     SHIYUME_PT_Sidebar,
     SHIYUME_PT_Animation,
     SHIYUME_PT_Mesh,
+    SHIYUME_PT_CommonMesh,
     SHIYUME_PT_Shader,
     SHIYUME_PT_UV,
     SHIYUME_PT_UVTransfer,
