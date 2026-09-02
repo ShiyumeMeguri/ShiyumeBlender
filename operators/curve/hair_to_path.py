@@ -1328,6 +1328,55 @@ def frames_for_strand(strand, readings):
     return frames
 
 
+def copy_spline(curve, spline):
+    made = curve.splines.new(spline.type)
+    made.points.add(len(spline.points) - 1)
+    for index, point in enumerate(spline.points):
+        made.points[index].co = point.co
+        made.points[index].radius = point.radius
+        made.points[index].tilt = point.tilt
+    made.use_endpoint_u = spline.use_endpoint_u
+    made.use_cyclic_u = spline.use_cyclic_u
+    made.resolution_u = spline.resolution_u
+    made.use_smooth = spline.use_smooth
+    made.order_u = spline.order_u
+    return made
+
+
+def merge_curve_objects(members, name):
+    first = members[0].data
+    curve = bpy.data.curves.new(name, 'CURVE')
+    curve.dimensions = first.dimensions
+    curve.twist_mode = first.twist_mode
+    curve.twist_smooth = first.twist_smooth
+    curve.bevel_mode = first.bevel_mode
+    curve.bevel_object = first.bevel_object
+    curve.use_fill_caps = first.use_fill_caps
+    curve.use_path = first.use_path
+    curve.resolution_u = first.resolution_u
+    slots = []
+    for member in members:
+        for material in member.data.materials:
+            if material not in slots:
+                slots.append(material)
+    for material in slots:
+        curve.materials.append(material)
+    for member in members:
+        lookup = {}
+        for index, material in enumerate(member.data.materials):
+            lookup[index] = slots.index(material)
+        for spline in member.data.splines:
+            copy_spline(curve, spline).material_index =                 lookup.get(spline.material_index, 0)
+    return bpy.data.objects.new(name, curve)
+
+
+def release_curve_object(obj):
+    data = obj.data
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if data is not None and not data.users:
+        bpy.data.curves.remove(data)
+
+
 def create_leftover_object(name, shells):
     vertices = []
     polygons = []
@@ -1400,6 +1449,12 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     "0 表示每根都独立",
         default=0.30, min=0.0, max=1.0, subtype='FACTOR')
 
+    merge_shared_curves: bpy.props.BoolProperty(
+        name="合并同截面曲线",
+        description="指向同一个 Profile 的发丝合并成一条多样条曲线，"
+                    "每根发丝仍是独立样条",
+        default=True)
+
     @classmethod
     def poll(cls, context):
         return any(obj.type == 'MESH' for obj in context.selected_objects)
@@ -1423,6 +1478,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         skipped = 0
         residuals = []
         shared = []
+        grouped = {}
         try:
             for source in sources:
                 strands, rejected, leftover = collect_strands(source, self.split_branches)
@@ -1477,18 +1533,33 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     curve_object.matrix_parent_inverse =                         profile_object.matrix_world.inverted()
                     for material in source.data.materials:
                         curve_object.data.materials.append(material)
+                    grouped.setdefault(profile_object.name, []).append(curve_object)
                     bpy.data.objects.remove(placeholder)
                     built += 1
         finally:
             bpy.data.objects.remove(probe)
 
+        merged = 0
+        if self.merge_shared_curves:
+            for _, profile_object in shared:
+                members = grouped.get(profile_object.name, [])
+                if not members:
+                    continue
+                whole = merge_curve_objects(
+                    members, profile_object.name.replace("_Profile_", "_Curve_"))
+                curve_collection.objects.link(whole)
+                whole.parent = profile_object
+                whole.matrix_parent_inverse = profile_object.matrix_world.inverted()
+                for member in members:
+                    release_curve_object(member)
+                merged += len(members) - 1
         depsgraph.update()
         exclude_collection(context.view_layer, profile_collection)
         ranked = sorted(residuals)
         median = ranked[len(ranked) // 2] if ranked else 0.0
         worst = ranked[-1] if ranked else 0.0
-        self.report({'INFO'}, "生成 %d 条路径曲线，%d 个截面，跳过 %d 片，"
+        self.report({'INFO'}, "生成 %d 根发丝合并为 %d 条曲线，%d 个截面，跳过 %d 片，"
                     "Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
-                        built, len(shared), skipped,
+                        built, built - merged, len(shared), skipped,
                         math.degrees(median), math.degrees(worst)))
         return {'FINISHED'} if built else {'CANCELLED'}
