@@ -297,7 +297,7 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
     interval: bpy.props.FloatProperty(
         name="间隔",
         description="相邻两刀的距离（UV 单位）",
-        default=0.01,
+        default=0.05,
         min=0.00001,
         soft_max=1.0,
         precision=5,
