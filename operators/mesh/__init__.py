@@ -1,7 +1,6 @@
 import bpy
 from . import aabb_select
 from . import grid_sort
-from . import grid_cut
 from . import topology_cut
 from . import cleanup_vgs
 from . import weight_prune
@@ -14,7 +13,6 @@ from . import common_sync
 classes = (
     aabb_select.SHIYUME_OT_AABBSelect,
     grid_sort.SHIYUME_OT_GridSort,
-    grid_cut.SHIYUME_OT_GridCut,
     topology_cut.SHIYUME_OT_TopologyCut,
     cleanup_vgs.SHIYUME_OT_CleanupVertexGroups,
     weight_prune.SHIYUME_OT_WeightPrune,

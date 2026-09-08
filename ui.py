@@ -47,7 +47,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
 
         elif mode in {"EDIT_MESH", "EDIT"}:
             layout.label(text="网格工具")
-            layout.operator("shiyume.grid_cut", icon="MOD_ARRAY")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
@@ -86,6 +85,8 @@ class SHIYUME_MT_UV(bpy.types.Menu):
         layout.separator()
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+        layout.separator()
+        layout.operator("shiyume.uv_cut", icon="MOD_ARRAY")
 
 
 def menu_func(self, context):
@@ -162,7 +163,6 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
 
         col = layout.column(align=True)
         col.label(text="拓扑/剪切")
-        col.operator("shiyume.grid_cut", icon="MOD_ARRAY")
         col.operator("shiyume.topology_cut", icon="MESH_GRID")
 
         col = layout.column(align=True)
@@ -264,6 +264,7 @@ class SHIYUME_PT_UV(bpy.types.Panel):
         layout.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT")
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+        layout.operator("shiyume.uv_cut", icon="MOD_ARRAY")
 
 
 class SHIYUME_PT_UVTransfer(bpy.types.Panel):
@@ -332,6 +333,33 @@ class SHIYUME_PT_UVTransfer(bpy.types.Panel):
         layout.operator("shiyume.uv_transfer", icon='TEXTURE')
 
 
+class SHIYUME_PT_UVEditor(bpy.types.Panel):
+    """UV 编辑器侧栏。切割是在 UV 平面上下刀的，工具就摆在下刀的地方。"""
+    bl_label = "Shiyume UV"
+    bl_idname = "SHIYUME_PT_UVEditor"
+    bl_space_type = 'IMAGE_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = 'Shiyume'
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        return (space is not None and space.type == 'IMAGE_EDITOR'
+                and space.show_uvedit)
+
+    def draw(self, context):
+        layout = self.layout
+
+        col = layout.column(align=True)
+        col.label(text="切割")
+        col.operator("shiyume.uv_cut", icon="MOD_ARRAY")
+
+        col = layout.column(align=True)
+        col.label(text="孤岛排布")
+        col.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
+        col.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+
+
 class SHIYUME_PT_Curve(bpy.types.Panel):
     bl_label = "曲线"
     bl_idname = "SHIYUME_PT_Curve"
@@ -372,6 +400,7 @@ _PANEL_CLASSES = (
     SHIYUME_PT_Shader,
     SHIYUME_PT_UV,
     SHIYUME_PT_UVTransfer,
+    SHIYUME_PT_UVEditor,
     SHIYUME_PT_Curve,
     SHIYUME_PT_Misc,
 )

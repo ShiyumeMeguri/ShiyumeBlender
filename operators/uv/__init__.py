@@ -4,6 +4,7 @@ from . import sync_shapekey
 from . import mesh_to_uv
 from . import uv_from_mesh
 from . import island_arrange
+from . import uv_cut
 from . import mesh_uv_sync_live
 from . import uv_transfer
 
@@ -14,6 +15,7 @@ classes = (
     uv_from_mesh.SHIYUME_OT_UVFromMesh,
     island_arrange.SHIYUME_OT_UVIslandEquidistant,
     island_arrange.SHIYUME_OT_UVIslandSortByHeight,
+    uv_cut.SHIYUME_OT_UVCut,
     mesh_uv_sync_live.SHIYUME_OT_MeshUVSyncLive,
     mesh_uv_sync_live.SHIYUME_OT_MeshUVSyncLiveDisable,
 )

@@ -1,88 +1,26 @@
 import bpy
 import bmesh
 
-
-def _uv_connected(loop_a, loop_b, uv_layer, epsilon=1e-5):
-    """Check if two loops share the same UV coordinate at their vertex."""
-    uv_a = loop_a[uv_layer].uv
-    uv_b = loop_b[uv_layer].uv
-    return (uv_a - uv_b).length < epsilon
+from . import uv_islands
 
 
-def _collect_islands(bm, uv_layer):
-    """Collect ALL UV islands as lists of loops via flood-fill over UV connectivity.
-
-    Returns a list of islands, where each island is a list of loops.
-    """
-    face_visited = set()
-    islands = []
-
-    for seed_face in bm.faces:
-        if seed_face.index in face_visited:
-            continue
-
-        island_loops = []
-        stack = [seed_face]
-
-        while stack:
-            face = stack.pop()
-            if face.index in face_visited:
-                continue
-            face_visited.add(face.index)
-
-            for loop in face.loops:
-                island_loops.append(loop)
-
-            # Find UV-connected neighbour faces
-            for loop in face.loops:
-                for other_loop in loop.vert.link_loops:
-                    if other_loop.face.index in face_visited:
-                        continue
-                    if _uv_connected(loop, other_loop, uv_layer):
-                        stack.append(other_loop.face)
-
-        if island_loops:
-            islands.append(island_loops)
-
-    return islands
+def _island_layout(island, uv_layer):
+    min_u, min_v, max_u, max_v = uv_islands.bounds(island.faces, uv_layer)
+    return {
+        'faces': island.faces,
+        'min_u': min_u, 'min_v': min_v,
+        'max_u': max_u, 'max_v': max_v,
+        'center_u': (min_u + max_u) / 2.0,
+        'center_v': (min_v + max_v) / 2.0,
+        'width': max_u - min_u,
+        'height': max_v - min_v,
+    }
 
 
-def _island_has_selection(loops, uv_layer, use_uv_select):
-    """Check if an island has at least one selected UV vertex.
-
-    When UV sync mode is ON, use_uv_select=False and we check face.select.
-    When UV sync mode is OFF, use_uv_select=True and we check loop UV select.
-    """
-    if use_uv_select:
-        return any(loop[uv_layer].select for loop in loops)
-    else:
-        return any(loop.face.select for loop in loops)
-
-
-def _collect_selected_islands(bm, uv_layer, use_uv_select):
-    """Collect only UV islands that contain at least one selected UV vertex.
-
-    Returns a list of islands (each a list of loops) that have selection.
-    """
-    all_islands = _collect_islands(bm, uv_layer)
-    return [
-        loops for loops in all_islands
-        if _island_has_selection(loops, uv_layer, use_uv_select)
-    ]
-
-
-def _island_bbox(loops, uv_layer):
-    """Compute bounding box of an island.
-
-    Returns (min_u, min_v, max_u, max_v).
-    """
-    us = []
-    vs = []
-    for loop in loops:
-        uv = loop[uv_layer].uv
-        us.append(uv.x)
-        vs.append(uv.y)
-    return min(us), min(vs), max(us), max(vs)
+def _offset_island(data, uv_layer, offset_u, offset_v):
+    for loop in uv_islands.loops(data['faces']):
+        loop[uv_layer].uv.x += offset_u
+        loop[uv_layer].uv.y += offset_v
 
 
 # --------------------------------------------------------------------------
@@ -130,30 +68,13 @@ class SHIYUME_OT_UVIslandEquidistant(bpy.types.Operator):
             self.report({'ERROR'}, "没有活动的 UV 层")
             return {'CANCELLED'}
 
-        # 检测 UV 同步选择模式
-        use_uv_select = not context.tool_settings.use_uv_select_sync
-
-        # 仅收集在 UV 编辑器中有选中顶点的孤岛
-        islands = _collect_selected_islands(bm, uv_layer, use_uv_select)
+        islands = uv_islands.collect_selected_islands(
+            bm, uv_layer, context.tool_settings)
         if len(islands) < 2:
             self.report({'WARNING'}, "需要在 UV 编辑器中选中至少两个孤岛")
             return {'CANCELLED'}
 
-        # Compute bounding boxes
-        island_data = []
-        for loops in islands:
-            min_u, min_v, max_u, max_v = _island_bbox(loops, uv_layer)
-            center_u = (min_u + max_u) / 2.0
-            center_v = (min_v + max_v) / 2.0
-            width = max_u - min_u
-            height = max_v - min_v
-            island_data.append({
-                'loops': loops,
-                'min_u': min_u, 'min_v': min_v,
-                'max_u': max_u, 'max_v': max_v,
-                'center_u': center_u, 'center_v': center_v,
-                'width': width, 'height': height,
-            })
+        island_data = [_island_layout(island, uv_layer) for island in islands]
 
         # Sort by current position on the chosen axis (preserve original order)
         if self.axis == 'X':
@@ -166,16 +87,12 @@ class SHIYUME_OT_UVIslandEquidistant(bpy.types.Operator):
             # Start from the left edge of the first island
             cursor = island_data[0]['min_u']
             for data in island_data:
-                offset = cursor - data['min_u']
-                for loop in data['loops']:
-                    loop[uv_layer].uv.x += offset
+                _offset_island(data, uv_layer, cursor - data['min_u'], 0.0)
                 cursor += data['width'] + self.spacing
         else:
             cursor = island_data[0]['min_v']
             for data in island_data:
-                offset = cursor - data['min_v']
-                for loop in data['loops']:
-                    loop[uv_layer].uv.y += offset
+                _offset_island(data, uv_layer, 0.0, cursor - data['min_v'])
                 cursor += data['height'] + self.spacing
 
         bmesh.update_edit_mesh(obj.data)
@@ -229,50 +146,27 @@ class SHIYUME_OT_UVIslandSortByHeight(bpy.types.Operator):
             self.report({'ERROR'}, "没有活动的 UV 层")
             return {'CANCELLED'}
 
-        use_uv_select = not context.tool_settings.use_uv_select_sync
-
-        islands = _collect_selected_islands(bm, uv_layer, use_uv_select)
+        islands = uv_islands.collect_selected_islands(
+            bm, uv_layer, context.tool_settings)
         if len(islands) < 2:
             self.report({'WARNING'}, "需要在 UV 编辑器中选中至少两个孤岛")
             return {'CANCELLED'}
 
-        # Compute bounding boxes
-        island_data = []
-        for loops in islands:
-            min_u, min_v, max_u, max_v = _island_bbox(loops, uv_layer)
-            width = max_u - min_u
-            height = max_v - min_v
-            island_data.append({
-                'loops': loops,
-                'min_u': min_u, 'min_v': min_v,
-                'max_u': max_u, 'max_v': max_v,
-                'width': width, 'height': height,
-            })
+        island_data = [_island_layout(island, uv_layer) for island in islands]
 
         # Sort by height (V extent) — default high-to-low, reversed = low-to-high
         island_data.sort(key=lambda d: d['height'], reverse=not self.reverse)
 
         # Place along X axis from left to right
         cursor_x = island_data[0]['min_u']
-
-        # Find common bottom if aligning
-        if self.align_bottom:
-            common_bottom = min(d['min_v'] for d in island_data)
+        common_bottom = min(d['min_v'] for d in island_data)
 
         for data in island_data:
-            # X offset
-            offset_x = cursor_x - data['min_u']
-            # Y offset (align bottom or keep original)
             offset_y = (common_bottom - data['min_v']) if self.align_bottom else 0.0
-
-            for loop in data['loops']:
-                loop[uv_layer].uv.x += offset_x
-                loop[uv_layer].uv.y += offset_y
-
+            _offset_island(data, uv_layer, cursor_x - data['min_u'], offset_y)
             cursor_x += data['width'] + self.spacing
 
         bmesh.update_edit_mesh(obj.data)
         order_text = "矮→高" if self.reverse else "高→矮"
         self.report({'INFO'}, f"已按高度 ({order_text}) 排列 {len(islands)} 个孤岛")
         return {'FINISHED'}
-
