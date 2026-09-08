@@ -1,6 +1,7 @@
 """在 UV 编辑器里直接切割网格：等距网格下刀，或照参考孤岛的布线下刀。"""
 
 import math
+from collections import namedtuple
 
 import bmesh
 import bpy
@@ -268,10 +269,15 @@ class EditMesh:
         self.uv_layer = uv_layer
 
 
+CutSide = namedtuple("CutSide", ("mesh", "selected_faces", "island_faces"))
+
+
 class SHIYUME_OT_UVCut(bpy.types.Operator):
     """在 UV 编辑器里直接切割网格。刀路写在 UV 平面上，新顶点的三维位置由所在面插值得到。
     等距网格：把选中孤岛按固定间隔切成等宽条带，并溶解掉被替换的旧布线。
-    参考布线：选中两个形状一致的孤岛，照参考孤岛的布线切活动面所在的那个孤岛。"""
+    参考布线：照另一份形状一致的 UV 的布线下刀，等价于按 UV 重拓扑。
+    编辑模式里有两个网格时按物体配对，活动物体被切、另一个当参考；
+    只有一个网格时在它内部按孤岛配对，活动面所在的孤岛被切。"""
 
     bl_idname = "shiyume.uv_cut"
     bl_label = "UV 切割"
@@ -373,7 +379,7 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
             edit_meshes.append(EditMesh(mesh_object, bm, uv_layer))
         return edit_meshes
 
-    def _cut_island(self, edit_mesh, work_faces, polylines):
+    def _cut_and_dissolve(self, edit_mesh, work_faces, polylines):
         before = len(edit_mesh.bm.faces)
         faces = cut_faces(edit_mesh.bm, edit_mesh.uv_layer, work_faces,
                           polylines, self.tolerance)
@@ -400,59 +406,108 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
                                            self.align_to_island, self.tolerance)
                 if not polylines:
                     continue
-                island_added, island_dissolved = self._cut_island(
+                island_added, island_dissolved = self._cut_and_dissolve(
                     edit_mesh, island.selected_faces, polylines)
                 added += island_added
                 dissolved += island_dissolved
                 island_count += 1
-        return island_count, added, dissolved
+        if island_count == 0:
+            self.report({"WARNING"}, "没有选中的 UV 孤岛，或间隔大于孤岛尺寸")
+            return None
+        return f"切了 {island_count} 个孤岛", added, dissolved
 
-    def _find_active_island(self, context, islands):
+    def _side_of(self, edit_mesh, islands):
+        """被切的一侧只动选中的面，当参考的一侧要拿整座孤岛的布线。"""
+        return CutSide(
+            edit_mesh,
+            [face for island in islands for face in island.selected_faces],
+            [face for island in islands for face in island.faces])
+
+    def _sides_by_object(self, context, selection):
+        if len(selection) != 2:
+            self.report(
+                {"ERROR"},
+                f"按物体切需要正好 2 个网格有选中的面，当前 {len(selection)} 个")
+            return None
+
         active_object = context.active_object
-        for index, (edit_mesh, island) in enumerate(islands):
-            if edit_mesh.object != active_object:
-                continue
-            active_face = edit_mesh.bm.faces.active
+        target_index = next(
+            (index for index, (edit_mesh, _islands) in enumerate(selection)
+             if edit_mesh.object == active_object), None)
+        if target_index is None:
+            self.report({"ERROR"},
+                        "活动物体上没有选中的面：把要被切的网格设为活动物体")
+            return None
+
+        return ("按物体切",
+                self._side_of(*selection[target_index]),
+                self._side_of(*selection[1 - target_index]))
+
+    def _sides_by_island(self, edit_mesh, islands):
+        if len(islands) != 2:
+            self.report(
+                {"ERROR"},
+                f"同一个网格里按孤岛切需要正好选中 2 个孤岛，当前 {len(islands)} 个")
+            return None
+
+        active_face = edit_mesh.bm.faces.active
+        target_index = None
+        for index, island in enumerate(islands):
             if active_face is not None and active_face in set(island.faces):
-                return index
-        return None
+                target_index = index
+                break
+        if target_index is None:
+            self.report({"ERROR"},
+                        "找不到活动面所在的孤岛：在 UV 视图里点一下要被切的那个孤岛")
+            return None
+
+        return ("按孤岛切",
+                self._side_of(edit_mesh, [islands[target_index]]),
+                self._side_of(edit_mesh, [islands[1 - target_index]]))
+
+    def _collect_sides(self, context, edit_meshes):
+        """两个网格在编辑模式里就按物体配对，只有一个就在它内部按孤岛配对。"""
+        selection = []
+        for edit_mesh in edit_meshes:
+            islands = uv_islands.collect_selected_islands(
+                edit_mesh.bm, edit_mesh.uv_layer, context.tool_settings)
+            if islands:
+                selection.append((edit_mesh, islands))
+
+        if not selection:
+            self.report({"ERROR"}, "没有选中任何 UV 面")
+            return None
+        if len(selection) > 1:
+            return self._sides_by_object(context, selection)
+        return self._sides_by_island(*selection[0])
 
     def _run_reference(self, context, edit_meshes):
-        islands = []
-        for edit_mesh in edit_meshes:
-            for island in uv_islands.collect_selected_islands(
-                    edit_mesh.bm, edit_mesh.uv_layer, context.tool_settings):
-                islands.append((edit_mesh, island))
-
-        if len(islands) != 2:
-            self.report({"ERROR"},
-                        f"参考布线需要正好选中 2 个 UV 孤岛，当前选中 {len(islands)} 个")
+        sides = self._collect_sides(context, edit_meshes)
+        if sides is None:
             return None
 
-        active_index = self._find_active_island(context, islands)
-        if active_index is None:
-            self.report({"ERROR"},
-                        "找不到活动面所在的孤岛：请在 UV 视图里点一下要被切的那个孤岛")
-            return None
-
-        target = islands[active_index]
-        reference = islands[1 - active_index]
+        pairing, target, reference = sides
         if self.swap_reference:
             target, reference = reference, target
-
-        target_mesh, target_island = target
-        reference_mesh, reference_island = reference
-        polylines = reference_polylines(
-            reference_island.faces, reference_mesh.uv_layer,
-            target_island.selected_faces, target_mesh.uv_layer,
-            self.fit_bounds)
-        if not polylines:
-            self.report({"WARNING"}, "参考孤岛没有内部边，没有可用的布线")
+        if not target.selected_faces:
+            self.report({"ERROR"}, "要被切的那一侧没有选中的面")
             return None
 
-        added, dissolved = self._cut_island(
-            target_mesh, target_island.selected_faces, polylines)
-        return 1, added, dissolved
+        polylines = reference_polylines(
+            reference.island_faces, reference.mesh.uv_layer,
+            target.selected_faces, target.mesh.uv_layer, self.fit_bounds)
+        if not polylines:
+            self.report({"WARNING"}, "参考侧没有内部边，没有可用的布线")
+            return None
+
+        added, dissolved = self._cut_and_dissolve(
+            target.mesh, target.selected_faces, polylines)
+
+        label = pairing
+        if reference.mesh.object != target.mesh.object:
+            label = "%s：%s → %s" % (pairing, reference.mesh.object.name,
+                                    target.mesh.object.name)
+        return label, added, dissolved
 
     def execute(self, context):
         edit_meshes = self._collect_edit_meshes(context)
@@ -467,15 +522,10 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
         if result is None:
             return {"CANCELLED"}
 
-        island_count, added, dissolved = result
-        if island_count == 0:
-            self.report({"WARNING"}, "没有选中的 UV 孤岛，或间隔大于孤岛尺寸")
-            return {"CANCELLED"}
-
+        label, added, dissolved = result
         for edit_mesh in edit_meshes:
             bmesh.update_edit_mesh(edit_mesh.object.data)
 
-        self.report(
-            {"INFO"},
-            f"切了 {island_count} 个孤岛：新增 {added} 个面，溶解 {dissolved} 条旧边")
+        self.report({"INFO"},
+                    f"{label}：新增 {added} 个面，溶解 {dissolved} 条旧边")
         return {"FINISHED"}
