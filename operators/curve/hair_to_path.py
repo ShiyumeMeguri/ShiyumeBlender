@@ -942,24 +942,61 @@ def matching_section(ladder, first, second):
     return None
 
 
-def resample_profile(points, count):
-    if count < 2 or len(points) < 2:
-        return [points[0]] * count
+def polyline_steps(points):
     steps = [0.0]
     for index in range(1, len(points)):
         steps.append(steps[-1] + math.hypot(points[index][0] - points[index - 1][0],
                                             points[index][1] - points[index - 1][1]))
-    total = steps[-1]
+    return steps
+
+
+def polyline_turn(points, index):
+    before = (points[index][0] - points[index - 1][0],
+              points[index][1] - points[index - 1][1])
+    after = (points[index + 1][0] - points[index][0],
+             points[index + 1][1] - points[index][1])
+    first = math.hypot(before[0], before[1])
+    second = math.hypot(after[0], after[1])
+    if first <= 1.0e-12 or second <= 1.0e-12:
+        return 0.0
+    cosine = (before[0] * after[0] + before[1] * after[1]) / (first * second)
+    return math.acos(max(-1.0, min(1.0, cosine)))
+
+
+def corner_indices(points, corner_angle):
+    marks = [0]
+    for index in range(1, len(points) - 1):
+        if polyline_turn(points, index) >= corner_angle:
+            marks.append(index)
+    marks.append(len(points) - 1)
+    return marks
+
+
+def share_extras(spans, extras):
+    total = sum(spans)
     if total <= 1.0e-12:
-        return [points[0]] * count
+        shares = [0] * len(spans)
+        for step in range(extras):
+            shares[step % len(spans)] += 1
+        return shares
+    exact = [span * extras / total for span in spans]
+    shares = [int(value) for value in exact]
+    order = sorted(range(len(spans)), key=lambda index: (-(exact[index] - shares[index]), index))
+    for step in range(extras - sum(shares)):
+        shares[order[step % len(order)]] += 1
+    return shares
+
+
+def sample_between(points, steps, low, high, count):
+    span = steps[high] - steps[low]
     samples = []
-    for step in range(count):
-        target = total * step / float(count - 1)
-        position = 1
-        while position < len(points) - 1 and steps[position] < target:
+    for step in range(1, count + 1):
+        target = steps[low] + span * step / float(count + 1)
+        position = low + 1
+        while position < high and steps[position] < target:
             position += 1
-        span = steps[position] - steps[position - 1]
-        blend = 0.0 if span <= 1.0e-12 else (target - steps[position - 1]) / span
+        width = steps[position] - steps[position - 1]
+        blend = 0.0 if width <= 1.0e-12 else (target - steps[position - 1]) / width
         blend = max(0.0, min(1.0, blend))
         first, second = points[position - 1], points[position]
         samples.append((first[0] + (second[0] - first[0]) * blend,
@@ -967,7 +1004,27 @@ def resample_profile(points, count):
     return samples
 
 
-def strand_profile(strand, frames):
+def resample_profile(points, count, corner_angle):
+    if count < 2 or len(points) < 2:
+        return [points[0]] * count
+    marks = corner_indices(points, corner_angle)
+    if count <= len(marks):
+        return [points[marks[int(round(step * (len(marks) - 1) / float(count - 1)))]]
+                for step in range(count)]
+    steps = polyline_steps(points)
+    spans = [steps[marks[index + 1]] - steps[marks[index]]
+             for index in range(len(marks) - 1)]
+    shares = share_extras(spans, count - len(marks))
+    samples = []
+    for index in range(len(marks) - 1):
+        samples.append(points[marks[index]])
+        samples.extend(sample_between(points, steps, marks[index], marks[index + 1],
+                                      shares[index]))
+    samples.append(points[marks[-1]])
+    return samples
+
+
+def strand_profile(strand, frames, corner_angle):
     gathered = {}
     for index in range(len(strand.widths)):
         width = strand.widths[index]
@@ -990,7 +1047,8 @@ def strand_profile(strand, frames):
         total = sum(width for width, _ in entries)
         blended = [[0.0, 0.0] for _ in range(count)]
         for width, planar in entries:
-            for position, sample in enumerate(resample_profile(planar, count)):
+            for position, sample in enumerate(
+                    resample_profile(planar, count, corner_angle)):
                 blended[position][0] += sample[0] * width
                 blended[position][1] += sample[1] * width
         polylines.append([(entry[0] / total, entry[1] / total) for entry in blended])
@@ -1449,6 +1507,12 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     "0 表示每根都独立",
         default=0.30, min=0.0, max=1.0, subtype='FACTOR')
 
+    profile_corner_angle: bpy.props.FloatProperty(
+        name="截面折角阈值",
+        description="截面上转折超过该角度的顶点算折角，重采样时原位保留不参与均匀化；"
+                    "0 表示每个顶点都不许移动，高频细节全保留",
+        default=0.0, min=0.0, max=math.pi, subtype='ANGLE')
+
     merge_shared_curves: bpy.props.BoolProperty(
         name="合并同截面曲线",
         description="指向同一个 Profile 的发丝合并成一条多样条曲线，"
@@ -1502,7 +1566,9 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     curve_collection.objects.link(curve_object)
                     residual, readings = fit_path(curve_object, strand, probe, depsgraph)
                     residuals.append(residual)
-                    polylines = strand_profile(strand, frames_for_strand(strand, readings))
+                    polylines = strand_profile(
+                        strand, frames_for_strand(strand, readings),
+                        self.profile_corner_angle)
                     if polylines is None:
                         bpy.data.objects.remove(placeholder)
                         bpy.data.objects.remove(curve_object)
