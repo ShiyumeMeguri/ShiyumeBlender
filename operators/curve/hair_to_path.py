@@ -1055,6 +1055,44 @@ def strand_profile(strand, frames, corner_angle):
     return polylines
 
 
+def centre_bends(centers):
+    bends = [0.0] * len(centers)
+    for index in range(1, len(centers) - 1):
+        before = centers[index] - centers[index - 1]
+        after = centers[index + 1] - centers[index]
+        if before.length > 1.0e-12 and after.length > 1.0e-12:
+            bends[index] = before.angle(after)
+    return bends
+
+
+def split_by_bend(bends, low, high, limit):
+    if high - low < 2:
+        return []
+    total = sum(bends[low + 1:high])
+    if total <= limit:
+        return []
+    running = 0.0
+    middle = low + 1
+    for index in range(low + 1, high):
+        running += bends[index]
+        if running >= total * 0.5:
+            middle = index
+            break
+    return split_by_bend(bends, low, middle, limit) + [middle] +         split_by_bend(bends, middle, high, limit)
+
+
+def refine_by_bend(centers, indices, limit):
+    if limit <= 0.0 or len(indices) < 2:
+        return indices
+    bends = centre_bends(centers)
+    refined = [indices[0]]
+    for position in range(len(indices) - 1):
+        low, high = indices[position], indices[position + 1]
+        refined.extend(split_by_bend(bends, low, high, limit))
+        refined.append(high)
+    return refined
+
+
 def decimate_indices(strand, tolerance):
     samples = [(center.x, center.y, center.z, strand.widths[index])
                for index, center in enumerate(strand.centers)]
@@ -1507,6 +1545,12 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                     "0 表示每根都独立",
         default=0.30, min=0.0, max=1.0, subtype='FACTOR')
 
+    curvature_step: bpy.props.FloatProperty(
+        name="折角细分角度",
+        description="相邻控制点之间允许累积的弯折量，超过就在弯折的一半处补一个控制点；"
+                    "越锐利的地方控制点越密，0 表示不按梯度细分",
+        default=math.radians(10.0), min=0.0, max=math.pi, subtype='ANGLE')
+
     profile_corner_angle: bpy.props.FloatProperty(
         name="截面折角阈值",
         description="截面上转折超过该角度的顶点算折角，重采样时原位保留不参与均匀化；"
@@ -1557,7 +1601,10 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                         [[(-0.5, 0.0), (0.0, -0.1), (0.5, 0.0)],
                          [(0.5, 0.0), (0.0, 0.1), (-0.5, 0.0)]])
                     scene.collection.objects.link(placeholder)
-                    indices = decimate_indices(strand, strand.mean_width * self.control_tolerance)
+                    indices = refine_by_bend(
+                        strand.centers,
+                        decimate_indices(strand, strand.mean_width * self.control_tolerance),
+                        self.curvature_step)
                     curve_object = create_path_curve(
                         label + "_Curve",
                         [strand.centers[index] for index in indices],
