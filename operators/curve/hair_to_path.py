@@ -5,10 +5,11 @@ import math
 
 from mathutils import Vector
 
-DIRECTION_VALID_FRACTION = 0.25
 PAIR_COINCIDENCE_FRACTION = 0.5
 PAIR_WELD_DISTANCE = 1.0e-5
+PARAMETER_ITERATIONS = 10
 PATH_ORDER = 5
+RAIL_OFFSET = 0.5
 REGULARIZATION = 1.0e-6
 TILT_ITERATIONS = 4
 TILT_WEIGHT_FLOOR = 0.02
@@ -453,12 +454,11 @@ def strand_frames(cross_sections):
         if tangent.length <= 1.0e-12:
             tangent = Vector((0.0, 0.0, 1.0))
         tangents.append(tangent.normalized())
-    reference = max(widths) if widths else 0.0
     raw = []
     for index in range(count):
         _, left, right = cross_sections[index]
         axis = right - left
-        if reference <= 1.0e-12 or axis.length < reference * DIRECTION_VALID_FRACTION:
+        if axis.length <= PAIR_WELD_DISTANCE:
             raw.append(None)
             continue
         tangent = tangents[index]
@@ -1055,66 +1055,25 @@ def strand_profile(strand, frames, corner_angle):
     return polylines
 
 
-def centre_bends(centers):
-    bends = [0.0] * len(centers)
-    for index in range(1, len(centers) - 1):
-        before = centers[index] - centers[index - 1]
-        after = centers[index + 1] - centers[index]
-        if before.length > 1.0e-12 and after.length > 1.0e-12:
-            bends[index] = before.angle(after)
-    return bends
-
-
-def split_by_bend(bends, low, high, limit):
-    if high - low < 2:
-        return []
-    total = sum(bends[low + 1:high])
-    if total <= limit:
-        return []
-    running = 0.0
-    middle = low + 1
-    for index in range(low + 1, high):
-        running += bends[index]
-        if running >= total * 0.5:
-            middle = index
-            break
-    return split_by_bend(bends, low, middle, limit) + [middle] +         split_by_bend(bends, middle, high, limit)
-
-
-def refine_by_bend(centers, indices, limit):
-    if limit <= 0.0 or len(indices) < 2:
-        return indices
-    bends = centre_bends(centers)
-    refined = [indices[0]]
-    for position in range(len(indices) - 1):
-        low, high = indices[position], indices[position + 1]
-        refined.extend(split_by_bend(bends, low, high, limit))
-        refined.append(high)
-    return refined
+def rail_chord_error(strand, parameters, low, high, index):
+    span = parameters[high] - parameters[low]
+    factor = 0.0 if span <= 1.0e-15 else (parameters[index] - parameters[low]) / span
+    worst = 0.0
+    for rail in (strand.left, strand.right):
+        worst = max(worst, (rail[index] - rail[low].lerp(rail[high], factor)).length)
+    return worst
 
 
 def decimate_indices(strand, tolerance):
-    samples = [(center.x, center.y, center.z, strand.widths[index])
-               for index, center in enumerate(strand.centers)]
+    parameters = centerline_parameters(strand.centers)
 
     def walk(low, high):
         if high - low < 2:
             return []
-        start = samples[low]
-        end = samples[high]
-        direction = tuple(end[axis] - start[axis] for axis in range(4))
-        length_squared = sum(value * value for value in direction)
         worst_index = low
         worst_distance = -1.0
         for index in range(low + 1, high):
-            offset = tuple(samples[index][axis] - start[axis] for axis in range(4))
-            if length_squared <= 1.0e-18:
-                distance = math.sqrt(sum(value * value for value in offset))
-            else:
-                factor = sum(offset[axis] * direction[axis] for axis in range(4)) / length_squared
-                factor = max(0.0, min(1.0, factor))
-                residual = tuple(offset[axis] - direction[axis] * factor for axis in range(4))
-                distance = math.sqrt(sum(value * value for value in residual))
+            distance = rail_chord_error(strand, parameters, low, high, index)
             if distance > worst_distance:
                 worst_index = index
                 worst_distance = distance
@@ -1122,7 +1081,7 @@ def decimate_indices(strand, tolerance):
             return []
         return walk(low, worst_index) + [worst_index] + walk(worst_index, high)
 
-    return [0] + walk(0, len(samples) - 1) + [len(samples) - 1]
+    return [0] + walk(0, len(strand.centers) - 1) + [len(strand.centers) - 1]
 
 
 PROFILE_SAMPLES = 9
@@ -1196,16 +1155,8 @@ def create_probe_object(name):
     return bpy.data.objects.new(name, curve)
 
 
-def create_path_curve(name, centers, widths, profile_object, resolution):
-    curve = bpy.data.curves.new(name, 'CURVE')
-    curve.dimensions = '3D'
-    curve.twist_mode = 'MINIMUM'
-    curve.twist_smooth = 0.0
-    curve.bevel_mode = 'OBJECT'
-    curve.bevel_object = profile_object
-    curve.use_fill_caps = False
-    curve.use_path = True
-    curve.resolution_u = resolution
+def set_path_spline(curve, centers, widths, resolution):
+    curve.splines.clear()
     spline = curve.splines.new('NURBS')
     spline.points.add(len(centers) - 1)
     for index, center in enumerate(centers):
@@ -1218,6 +1169,18 @@ def create_path_curve(name, centers, widths, profile_object, resolution):
     spline.use_cyclic_u = False
     spline.resolution_u = resolution
     spline.use_smooth = True
+
+
+def create_path_curve(name, profile_object, resolution):
+    curve = bpy.data.curves.new(name, 'CURVE')
+    curve.dimensions = '3D'
+    curve.twist_mode = 'MINIMUM'
+    curve.twist_smooth = 0.0
+    curve.bevel_mode = 'OBJECT'
+    curve.bevel_object = profile_object
+    curve.use_fill_caps = False
+    curve.use_path = True
+    curve.resolution_u = resolution
     return bpy.data.objects.new(name, curve)
 
 
@@ -1308,27 +1271,36 @@ def centerline_parameters(centers):
     return [value / total for value in values]
 
 
-def interpolate(values, parameters, target, blend):
-    if target <= parameters[0]:
-        return values[0]
-    if target >= parameters[-1]:
-        return values[-1]
-    for index in range(len(parameters) - 1):
-        low, high = parameters[index], parameters[index + 1]
+def locate(values, target):
+    if target <= values[0]:
+        return 0, 0.0
+    if target >= values[-1]:
+        return len(values) - 2, 1.0
+    for index in range(len(values) - 1):
+        low, high = values[index], values[index + 1]
         if low <= target <= high:
             span = high - low
-            factor = 0.0 if span <= 1.0e-15 else (target - low) / span
-            return blend(values[index], values[index + 1], factor)
-    return values[-1]
+            return index, 0.0 if span <= 1.0e-15 else (target - low) / span
+    return len(values) - 2, 1.0
 
 
-def build_targets(strand, count):
+def section_places(strand, readings):
+    walked = centerline_parameters([reading[0] for reading in readings])
+    return [locate(walked, value)
+            for value in centerline_parameters(strand.centers)]
+
+
+def interpolate(values, parameters, target, blend):
+    index, factor = locate(parameters, target)
+    return blend(values[index], values[index + 1], factor)
+
+
+def build_targets(strand, values):
     parameters = centerline_parameters(strand.centers)
     positions = []
     widths = []
     directions = []
-    for index in range(count):
-        value = index / float(count - 1)
+    for value in values:
         positions.append(interpolate(strand.centers, parameters, value,
                                      lambda a, b, f: a.lerp(b, f)))
         widths.append(interpolate(strand.widths, parameters, value,
@@ -1345,6 +1317,13 @@ def build_targets(strand, count):
             direction = tangent.orthogonal()
         directions.append(direction.normalized())
     return positions, widths, directions
+
+
+def blend_readings(readings, places):
+    return [(readings[index][0].lerp(readings[index + 1][0], factor),
+             readings[index][1].lerp(readings[index + 1][1], factor),
+             readings[index][2].lerp(readings[index + 1][2], factor))
+            for index, factor in places]
 
 
 def unwrap(values):
@@ -1375,17 +1354,25 @@ def measure_tilt_error(readings, directions):
 def fit_path(curve_object, strand, probe_object, depsgraph):
     points = curve_object.data.splines[0].points
     basis = measure_basis(curve_object, probe_object, depsgraph)
-    positions, widths, directions = build_targets(strand, len(basis))
-    solutions = solve_least_squares(basis, [
-        [position.x for position in positions],
-        [position.y for position in positions],
-        [position.z for position in positions],
-        widths,
-    ])
-    for index, point in enumerate(points):
-        point.co = (solutions[0][index], solutions[1][index], solutions[2][index], 1.0)
-        point.radius = max(0.0, solutions[3][index])
-    depsgraph.update()
+    values = [index / float(len(basis) - 1) for index in range(len(basis))]
+    for _ in range(PARAMETER_ITERATIONS):
+        positions, widths, directions = build_targets(strand, values)
+        solutions = solve_least_squares(basis, [
+            [position.x for position in positions],
+            [position.y for position in positions],
+            [position.z for position in positions],
+            widths,
+        ])
+        for index, point in enumerate(points):
+            point.co = (solutions[0][index], solutions[1][index], solutions[2][index], 1.0)
+            point.radius = max(0.0, solutions[3][index])
+        depsgraph.update()
+        readings = evaluate_probe(curve_object, probe_object, depsgraph)
+        if len(readings) != len(basis):
+            basis = measure_basis(curve_object, probe_object, depsgraph)
+            readings = evaluate_probe(curve_object, probe_object, depsgraph)
+        values = centerline_parameters([reading[0] for reading in readings])
+    positions, widths, directions = build_targets(strand, values)
     reference = max(widths) if widths else 0.0
     weights = [max(TILT_WEIGHT_FLOOR, width / reference) if reference > 1.0e-12 else 1.0
                for width in widths]
@@ -1406,18 +1393,104 @@ def fit_path(curve_object, strand, probe_object, depsgraph):
     return residual, readings
 
 
+def swept_rails(readings):
+    left = [reading[0] - reading[1] * RAIL_OFFSET for reading in readings]
+    right = [reading[0] + reading[1] * RAIL_OFFSET for reading in readings]
+    return left, right
+
+
+def distance_to_polyline(polyline, point):
+    if len(polyline) < 2:
+        return (point - polyline[0]).length
+    best = None
+    for index in range(len(polyline) - 1):
+        head = polyline[index]
+        span = polyline[index + 1] - head
+        length = span.length_squared
+        if length <= 1.0e-18:
+            distance = (point - head).length
+        else:
+            factor = max(0.0, min(1.0, (point - head).dot(span) / length))
+            distance = (point - (head + span * factor)).length
+        if best is None or distance < best:
+            best = distance
+    return best
+
+
+def nearest_section(rail, point):
+    return min(range(len(rail)),
+               key=lambda index: (rail[index] - point).length_squared)
+
+
+def rail_errors(strand, readings):
+    errors = [0.0] * len(strand.centers)
+    for made, wanted in zip(swept_rails(readings), (strand.left, strand.right)):
+        for index, point in enumerate(wanted):
+            errors[index] = max(errors[index], distance_to_polyline(made, point))
+        for sample in made:
+            index = nearest_section(wanted, sample)
+            errors[index] = max(errors[index], distance_to_polyline(wanted, sample))
+    return errors
+
+
+def insert_worst_sections(indices, errors, tolerance, budget):
+    grown = []
+    room = budget - len(indices)
+    for position in range(len(indices) - 1):
+        low, high = indices[position], indices[position + 1]
+        grown.append(low)
+        if room <= 0 or max(errors[low:high + 1]) <= tolerance:
+            continue
+        if high - low >= 2:
+            grown.append(max(range(low + 1, high),
+                             key=lambda index: (errors[index], -index)))
+        elif indices.count(low) < PATH_ORDER - 1 and errors[low] >= errors[high]:
+            grown.append(low)
+        elif indices.count(high) < PATH_ORDER - 1:
+            grown.append(high)
+        else:
+            continue
+        room -= 1
+    grown.append(indices[-1])
+    return grown
+
+
+def fit_control_points(curve_object, strand, probe_object, depsgraph,
+                       tolerance, resolution):
+    def attempt(chosen):
+        set_path_spline(curve_object.data,
+                        [strand.centers[index] for index in chosen],
+                        [strand.widths[index] for index in chosen], resolution)
+        residual, readings = fit_path(curve_object, strand, probe_object, depsgraph)
+        return residual, readings, rail_errors(strand, readings)
+
+    indices = decimate_indices(strand, tolerance)
+    residual, readings, errors = attempt(indices)
+    best = (max(errors), list(indices))
+    while best[0] > tolerance:
+        grown = insert_worst_sections(indices, errors, tolerance,
+                                      len(strand.centers))
+        if len(grown) == len(indices):
+            break
+        indices = grown
+        residual, readings, errors = attempt(indices)
+        if max(errors) >= best[0]:
+            break
+        best = (max(errors), list(indices))
+    if indices != best[1]:
+        residual, readings, errors = attempt(best[1])
+    return residual, readings
+
+
 def frames_for_strand(strand, readings):
-    if not readings:
+    if len(readings) < 2:
         return [(Vector((1.0, 0.0, 0.0)), Vector((0.0, 1.0, 0.0)))] * len(strand.centers)
-    parameters = centerline_parameters(strand.centers)
     frames = []
-    for index in range(len(strand.centers)):
-        position = min(len(readings) - 1,
-                       int(round(parameters[index] * (len(readings) - 1))))
-        span_x, span_y = readings[position][1], readings[position][2]
+    for sampled in blend_readings(readings, section_places(strand, readings)):
+        span_x, span_y = sampled[1], sampled[2]
         if span_x.length <= 1.0e-12 or span_y.length <= 1.0e-12:
-            for candidate in range(len(readings)):
-                span_x, span_y = readings[candidate][1], readings[candidate][2]
+            for candidate in readings:
+                span_x, span_y = candidate[1], candidate[2]
                 if span_x.length > 1.0e-12 and span_y.length > 1.0e-12:
                     break
         frames.append((span_x.normalized(), span_y.normalized()))
@@ -1508,6 +1581,9 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
     截面按每片壳拆成开放样条，所以生成的拓扑和原始面片同构。
     控制点的位置 / Radius / Tilt 由实测 NURBS 基函数最小二乘反解得到，
     保证求值出来的曲线本身贴合原网格，而不是让控制多边形贴合。
+    控制点按发片两条边缘的实测偏差自动增删，不需要手调角度阈值：
+    先按边缘偏差抽稀，再反复实测扫出来的边缘与原边缘的双向距离并在最差的
+    区段补点，直到进入容差或补点不再改善，所以越弯越扭的地方控制点越密。
     多分支头发不支持，会原样导出到 HairToPath_NeedManualSplit 供手动拆分。"""
     bl_idname = "shiyume.hair_to_path"
     bl_label = "头发转路径曲线"
@@ -1519,8 +1595,10 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         default=3, min=1, max=24)
 
     control_tolerance: bpy.props.FloatProperty(
-        name="控制点简化容差",
-        description="按平均宽度的比例简化控制点。调小得到更多控制点与更高精度",
+        name="边缘贴合容差",
+        description="发片两条边缘允许偏离原网格的距离，按平均宽度的比例计。"
+                    "控制点先按边缘偏差抽稀，再按实测边缘误差自动加密，"
+                    "所以越弯越扭的地方控制点越密。调小得到更高精度",
         default=0.10, min=0.0, max=1.0, precision=3)
 
     split_branches: bpy.props.BoolProperty(
@@ -1544,12 +1622,6 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         description="两条发丝的截面形状差异小于该比例时共用同一个 Profile，"
                     "0 表示每根都独立",
         default=0.30, min=0.0, max=1.0, subtype='FACTOR')
-
-    curvature_step: bpy.props.FloatProperty(
-        name="折角细分角度",
-        description="相邻控制点之间允许累积的弯折量，超过就在弯折的一半处补一个控制点；"
-                    "越锐利的地方控制点越密，0 表示不按梯度细分",
-        default=math.radians(10.0), min=0.0, max=math.pi, subtype='ANGLE')
 
     profile_corner_angle: bpy.props.FloatProperty(
         name="截面折角阈值",
@@ -1601,17 +1673,12 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                         [[(-0.5, 0.0), (0.0, -0.1), (0.5, 0.0)],
                          [(0.5, 0.0), (0.0, 0.1), (-0.5, 0.0)]])
                     scene.collection.objects.link(placeholder)
-                    indices = refine_by_bend(
-                        strand.centers,
-                        decimate_indices(strand, strand.mean_width * self.control_tolerance),
-                        self.curvature_step)
                     curve_object = create_path_curve(
-                        label + "_Curve",
-                        [strand.centers[index] for index in indices],
-                        [strand.widths[index] for index in indices],
-                        placeholder, self.resolution)
+                        label + "_Curve", placeholder, self.resolution)
                     curve_collection.objects.link(curve_object)
-                    residual, readings = fit_path(curve_object, strand, probe, depsgraph)
+                    residual, readings = fit_control_points(
+                        curve_object, strand, probe, depsgraph,
+                        strand.mean_width * self.control_tolerance, self.resolution)
                     residuals.append(residual)
                     polylines = strand_profile(
                         strand, frames_for_strand(strand, readings),
