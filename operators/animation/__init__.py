@@ -6,7 +6,6 @@ from . import cleanup_transforms
 from . import fix_paths
 from . import clean_bone_collections
 from . import auto_bone_orientation
-from . import rig_sync
 
 classes = (
     offset_keyframes.SHIYUME_OT_AnimationOffset,
@@ -16,9 +15,6 @@ classes = (
     fix_paths.SHIYUME_OT_FixInvalidAnimPaths,
     clean_bone_collections.SHIYUME_OT_CleanBoneCollections,
     auto_bone_orientation.SHIYUME_OT_AutoBoneOrientation,
-    rig_sync.SHIYUME_OT_RigBind,
-    rig_sync.SHIYUME_OT_RigPush,
-    rig_sync.SHIYUME_OT_RigPull,
 )
 
 def register():

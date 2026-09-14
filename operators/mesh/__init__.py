@@ -8,7 +8,6 @@ from . import select_avg_size_half
 from . import vg_smooth_merge
 from . import match_weights_active
 from . import pair_weights
-from . import common_sync
 
 classes = (
     aabb_select.SHIYUME_OT_AABBSelect,
@@ -21,11 +20,6 @@ classes = (
     match_weights_active.SHIYUME_OT_MatchWeightsActive,
     pair_weights.SHIYUME_OT_SwapVertexWeights,
     pair_weights.SHIYUME_OT_CopyVertexWeights,
-    common_sync.SHIYUME_OT_CommonBindPick,
-    common_sync.SHIYUME_OT_CommonBind,
-    common_sync.SHIYUME_OT_CommonUnbind,
-    common_sync.SHIYUME_OT_CommonPush,
-    common_sync.SHIYUME_OT_CommonPull,
 )
 
 

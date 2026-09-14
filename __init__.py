@@ -10,7 +10,7 @@ bl_info = {
 
 import bpy
 from . import ui
-from .operators import animation, shader, uv, mesh, curve, misc, object_ops
+from .operators import animation, shader, uv, mesh, curve, misc, object_ops, common
 
 modules = [
     animation,
@@ -20,6 +20,7 @@ modules = [
     curve,
     misc,
     object_ops,
+    common,
     ui
 ]
 
