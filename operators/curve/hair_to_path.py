@@ -143,9 +143,8 @@ def across_edges(faces):
     classes = {0: [], 1: []}
     for edge in edges:
         classes[colours[roots[edge]]].append(edge)
-    rim = [sum(1 for edge in classes[value] if len(edge.link_faces) == 1)
-           for value in (0, 1)]
-    return classes[0 if rim[0] < rim[1] else 1]
+    groups = [len(edge_chains(classes[value])) for value in (0, 1)]
+    return classes[0 if groups[0] > groups[1] else 1]
 
 
 def edge_chains(edges):
@@ -174,9 +173,13 @@ def chain_path(group):
         for vertex in edge.verts:
             counter[vertex] = counter.get(vertex, 0) + 1
     ends = [vertex for vertex, value in counter.items() if value == 1]
-    if len(ends) != 2:
+    if len(ends) == 2:
+        start = ordered(ends)[0]
+    elif not ends and counter:
+        start = ordered(counter)[0]
+    else:
         return None
-    path = [ordered(ends)[0]]
+    path = [start]
     used = set()
     current = path[0]
     while True:
@@ -202,6 +205,9 @@ def grid_rows(faces):
     for group in edge_chains(across_edges(faces)):
         path = chain_path(group)
         if path is None:
+            continue
+        if path[0] is path[-1]:
+            rows.append(path)
             continue
         if not on_rim(path[0]) or not on_rim(path[-1]):
             continue
@@ -400,20 +406,10 @@ def fold_arc(inner, outward):
     return sections
 
 
-def extract_ribbon(component, matrix):
-    faces = set()
-    for vertex in component:
-        faces.update(vertex.link_faces)
-    rows = grid_rows(faces)
-    if len(rows) < 2:
-        return None, "发片没有横向网格行，无法作为条带提取"
-    rows = order_rows(rows, faces)
-    if rows is None:
-        return None, "横向网格行排不成一条链"
-    rows = orient_rows(rows)
+def open_ribbon(component, rows, matrix):
     cycle = boundary_cycle(component)
     if cycle is None:
-        return None, "发片边界不是单一闭环"
+        return None
     place = {vertex: index for index, vertex in enumerate(cycle)}
     marks = set()
     for path in rows:
@@ -422,7 +418,7 @@ def extract_ribbon(component, matrix):
     lead = arc_between(cycle, place, rows[0][0], rows[0][-1], marks - head)
     trail = arc_between(cycle, place, rows[-1][0], rows[-1][-1], marks - tail)
     if lead is None or trail is None:
-        return None, "发片两端与横向网格行不吻合"
+        return None
     ladder = [list(path) for path in rows]
     forward = row_centre(rows[1]) - row_centre(rows[0])
     backward = row_centre(rows[-1]) - row_centre(rows[-2])
@@ -436,7 +432,77 @@ def extract_ribbon(component, matrix):
     closing = fold_arc(middle, backward)
     sections = opening + ladder + closing
     ladder = [[matrix @ vertex.co for vertex in path] for path in sections]
-    return ([path[0] for path in ladder], [path[-1] for path in ladder], ladder), None
+    return [path[0] for path in ladder], [path[-1] for path in ladder], ladder
+
+
+def farthest_pair(ring):
+    best = (0, 1)
+    best_distance = -1.0
+    for first in range(len(ring)):
+        for second in range(first + 1, len(ring)):
+            distance = (ring[first].co - ring[second].co).length
+            if distance > best_distance:
+                best_distance = distance
+                best = (first, second)
+    return best
+
+
+def ring_correspondence(row, next_row):
+    targets = set(next_row)
+    mapping = {}
+    for vertex in row:
+        matches = [other for other in
+                  (edge.other_vert(vertex) for edge in vertex.link_edges)
+                  if other in targets]
+        if len(matches) != 1:
+            return None
+        mapping[vertex] = matches[0]
+    if len(set(mapping.values())) != len(mapping):
+        return None
+    return mapping
+
+
+def closed_ribbons(rows, matrix):
+    rings = [row[:-1] for row in rows]
+    if len(rings[0]) < 3:
+        return []
+    correspondences = []
+    for index in range(len(rings) - 1):
+        mapping = ring_correspondence(rings[index], rings[index + 1])
+        if mapping is None or len(mapping) != len(rings[index]):
+            return []
+        correspondences.append(mapping)
+    seed = rings[0]
+    left_index, right_index = farthest_pair(seed)
+    place = {vertex: index for index, vertex in enumerate(seed)}
+    starts = [cycle_run(seed, place, seed[left_index], seed[right_index]),
+             cycle_run(seed, place, seed[right_index], seed[left_index])]
+    ribbons = []
+    for start in starts:
+        arc_rows = [start]
+        for mapping in correspondences:
+            arc_rows.append([mapping[vertex] for vertex in arc_rows[-1]])
+        ladder = [[matrix @ vertex.co for vertex in arc] for arc in arc_rows]
+        ribbons.append((
+            [path[0] for path in ladder], [path[-1] for path in ladder], ladder))
+    return ribbons
+
+
+def extract_ribbons(component, matrix):
+    faces = set()
+    for vertex in component:
+        faces.update(vertex.link_faces)
+    rows = grid_rows(faces)
+    if len(rows) < 2:
+        return []
+    rows = order_rows(rows, faces)
+    if rows is None:
+        return []
+    rows = orient_rows(rows)
+    if all(row[0] is row[-1] for row in rows):
+        return closed_ribbons(rows, matrix)
+    ribbon = open_ribbon(component, rows, matrix)
+    return [ribbon] if ribbon is not None else []
 
 
 def strand_frames(cross_sections):
@@ -578,20 +644,30 @@ def island_face_loops(island, matrix):
     return [[matrix @ vertex.co for vertex in face.verts] for face in ordered(faces)]
 
 
+def ribbon_entries(ribbons, loops, size, covered):
+    entries = []
+    for index, ribbon in enumerate(ribbons):
+        if index == 0:
+            entries.append((ribbon, loops, size, covered))
+        else:
+            entries.append((ribbon, [], 0, set()))
+    return entries
+
+
 def ribbon_from_faces(faces, matrix):
     sub = submesh_from_faces(faces)
     islands = shell_islands(sub)
     if len(islands) != 1:
         sub.free()
-        return None
-    ribbon, _ = extract_ribbon(islands[0], matrix)
-    if ribbon is None:
+        return []
+    ribbons = extract_ribbons(islands[0], matrix)
+    if not ribbons:
         sub.free()
-        return None
+        return []
     loops = island_face_loops(islands[0], matrix)
     size = len(islands[0])
     sub.free()
-    return (ribbon, loops, size, set(faces))
+    return ribbon_entries(ribbons, loops, size, set(faces))
 
 
 TIP_ANGLE_LIMIT = 70.0
@@ -862,8 +938,7 @@ def split_all_patches(islands, matrix):
             if other != position:
                 partners.extend(marks[other])
         for piece in split_patch_by_loops(patch, tips, partners):
-            ribbon = ribbon_from_faces(piece, matrix)
-            if ribbon is not None:
+            for ribbon in ribbon_from_faces(piece, matrix):
                 produced.setdefault(shell_index, []).append(ribbon)
     return produced
 
@@ -883,8 +958,8 @@ def collect_strands(source_object, split_branches=True):
         if split_branches:
             found = produced.get(shell_index, [])
         else:
-            ribbon, _ = extract_ribbon(island, matrix)
-            found = [(ribbon, loops, len(island), set())] if ribbon is not None else []
+            found = ribbon_entries(extract_ribbons(island, matrix), loops,
+                                   len(island), set())
         if not found:
             rejected.append((shell_index, len(island), "无法提取为发片条带"))
             leftover.append(loops)
@@ -1129,10 +1204,10 @@ def solid_outline(polylines):
         back = list(ranked[-1])
     else:
         back = [(point[0], -point[1]) for point in front]
-    return front + list(reversed(back))
+    return [front, list(reversed(back))]
 
 
-def create_profile_object(name, polylines, closed=False):
+def create_profile_object(name, polylines):
     curve = bpy.data.curves.new(name, 'CURVE')
     curve.dimensions = '2D'
     for polyline in polylines:
@@ -1140,7 +1215,7 @@ def create_profile_object(name, polylines, closed=False):
         spline.points.add(len(polyline) - 1)
         for index, point in enumerate(polyline):
             spline.points[index].co = (point[0], point[1], 0.0, 1.0)
-        spline.use_cyclic_u = closed
+        spline.use_cyclic_u = False
     return bpy.data.objects.new(name, curve)
 
 
@@ -1613,8 +1688,8 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
 
     solid_section: bpy.props.BoolProperty(
         name="实心截面",
-        description="把截面合成一条闭合环；只有单面的发片镜像出反面顶点，"
-                    "正反两端的顶点各自保留不合并",
+        description="只有单面的发片镜像出反面顶点，保证头发是实心的；"
+                    "正反两个截面各自保留成独立的开放样条，表里分离不缝合",
         default=True)
 
     profile_similarity: bpy.props.FloatProperty(
@@ -1695,7 +1770,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                             bpy.data.objects.remove(curve_object)
                             skipped += 1
                             continue
-                        polylines = [outline]
+                        polylines = outline
                     samples = profile_envelope(polylines)
                     profile_object = None
                     for stored, existing in shared:
@@ -1704,8 +1779,7 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                             break
                     if profile_object is None:
                         profile_object = create_profile_object(
-                            "HairToPath_Profile_%02d" % len(shared),
-                            polylines, self.solid_section)
+                            "HairToPath_Profile_%02d" % len(shared), polylines)
                         profile_collection.objects.link(profile_object)
                         shared.append((samples, profile_object))
                     curve_object.data.bevel_object = profile_object
