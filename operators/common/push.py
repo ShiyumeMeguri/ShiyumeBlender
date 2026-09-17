@@ -1,7 +1,7 @@
 """推送: 把摘下来的数据块写回唯一源, 备份源的这一版历史, 再把链接接回去。
 
-一次推整个文件, 不是推选中的那几个 —— "始终只有一个源"这句话要成立, 文件里就不能留着
-一份摘开的数据块不管它。摘开的那份是这个文件私有的岔路, 推完必须收回去。
+推送的范围是**传进来的那几个数据块**, 不是写死的"整个文件": 整角色推、只推手上这一个网格、
+只推刚改完的那几件, 都是同一条路, 上面那层只决定名单。
 
 顺序:
 
@@ -15,7 +15,11 @@
      到刚推上去的那一版, 而且下次源再更新也不跟了。`wm.lib_reload` 要窗口上下文, 后台跑不
      起来也就验不了, 所以不用它: 重读整个文件是确定性的, 两种环境下行为一致。
 
-  3. 在重读之后的干净状态里逐个 reattach, 再存一次。
+  3. 在重读之后的干净状态里接回链接。
+
+第 2 步之后 Python 这边的数据块引用全部失效, 所以名单不能拿对象存, 只能拿
+**(源路径, 类型, 源里的名字)** 这组字符串存 —— 重读之后按它重新认人, 只接回这一次推上去的
+那几个, 别人摘开的照旧摘着。
 
 第 2 步会丢掉撤销历史, 但推送本来就是一个"落定"的动作, 而且这一步之前已经存过盘, 没有
 数据会丢。
@@ -32,6 +36,34 @@ from . import linkage
 
 MARKER = "@SHIYUMESYNC "
 WORKER = os.path.join(os.path.dirname(__file__), "worker.py")
+
+
+def detached_of(objects):
+    """这些物体身上摘开待推送的数据块 (去重, 保持选中顺序)。"""
+    found = []
+    for obj in objects:
+        datablock = obj.data
+        if datablock is not None and linkage.is_detached(datablock) and datablock not in found:
+            found.append(datablock)
+    return found
+
+
+def all_detached():
+    """整个文件里摘开的数据块。"""
+    return [datablock for _path, rows in linkage.detached_datablocks().items()
+            for _kind, datablock, _name in rows]
+
+
+def _grouped(datablocks):
+    """{源路径: [(类型, 数据块, 源里的名字)]}; 问不出源的直接忽略。"""
+    groups = {}
+    for datablock in datablocks:
+        kind = linkage.collection_of(datablock)
+        reference = linkage.source_reference(datablock)
+        if kind is None or reference is None:
+            continue
+        groups.setdefault(reference[0], []).append((kind, datablock, reference[1]))
+    return groups
 
 
 def _objects_using(datablock):
@@ -103,7 +135,7 @@ def _archive_source(path, notes):
 
 
 def _write_sources(groups, notes):
-    """把每个源各写一次。返回 (成功行, 失败结果或 None)。"""
+    """把点到名的每个源各写一次。返回 (成功行, 失败结果或 None)。"""
     lines = []
     for path, rows in groups.items():
         if not os.path.isfile(path):
@@ -127,33 +159,30 @@ def _write_sources(groups, notes):
     return lines, None
 
 
-def reattach_detached(notes):
-    """把文件里所有摘开的数据块接回源。返回 (接回数, 总数)。"""
-    groups = linkage.detached_datablocks()
-    total = sum(len(rows) for rows in groups.values())
+def _reattach(datablocks, notes):
+    """接回链接; 逐个隔离, 接不回去的点名说。返回 (成功数, 总数)。"""
     done = 0
-    for path, rows in groups.items():
-        if not os.path.isfile(path):
-            notes.append("源文件不存在, 接不回去: %s" % path)
-            continue
-        for _kind, datablock, _source_name in rows:
-            name = datablock.name
-            try:
-                linkage.reattach(datablock)
-                done += 1
-            except Exception as error:      # noqa: BLE001 逐个隔离: 接不回去要点名说
-                notes.append("%s 接不回链接: %s" % (name, error))
-    return done, total
+    for datablock in datablocks:
+        name = datablock.name
+        try:
+            linkage.reattach(datablock)
+            done += 1
+        except Exception as error:          # noqa: BLE001
+            notes.append("%s 接不回链接: %s" % (name, error))
+    return done, len(datablocks)
 
 
-def push_all():
-    """把整个文件里摘开的数据块推回各自的源, 再接回链接。"""
-    groups = linkage.detached_datablocks()
+def push(datablocks):
+    """把点到名的这几个摘开的数据块推回各自的源, 再接回链接。"""
+    groups = _grouped(datablocks)
     if not groups:
-        return {'ok': False, 'error': '这个文件里没有摘下来待推送的共用数据'}
+        return {'ok': False, 'error': '点到名的东西里没有摘下来待推送的共用数据'}
     work = bpy.data.filepath
     if not work:
         return {'ok': False, 'error': '本文件还没存过盘; 推送之后要重新读它, 先存一次'}
+
+    wanted = {(path, kind, source_name)
+              for path, rows in groups.items() for kind, _db, source_name in rows}
 
     notes = []
     lines, failure = _write_sources(groups, notes)
@@ -163,16 +192,27 @@ def push_all():
     bpy.ops.wm.save_mainfile()
     bpy.ops.wm.open_mainfile(filepath=work)
 
-    done, total = reattach_detached(notes)
+    # 重读之后原来的引用全废了, 按名单里那组字符串重新认人
+    coming_back = [datablock
+                   for path, rows in linkage.detached_datablocks().items()
+                   for kind, datablock, source_name in rows
+                   if (path, kind, source_name) in wanted]
+    done, total = _reattach(coming_back, notes)
     bpy.ops.wm.save_mainfile()
+
+    left = sum(len(rows) for rows in linkage.detached_datablocks().values())
     lines.append("接回 %d/%d" % (done, total))
+    if left:
+        notes.append("这个文件里还有 %d 份摘开的没推" % left)
     return {'ok': True, 'notes': notes, 'summary': ' | '.join(line for line in lines if line)}
 
 
-def discard_local():
-    """不推送, 只把摘开的数据块丢掉本地改动接回源 —— 改错了要放弃时用。"""
-    if not linkage.detached_datablocks():
-        return {'ok': False, 'error': '这个文件里没有摘下来的共用数据'}
+def discard(datablocks):
+    """不推送, 丢掉本地改动直接接回源 —— 改错了要放弃时用。"""
+    groups = _grouped(datablocks)
+    if not groups:
+        return {'ok': False, 'error': '点到名的东西里没有摘下来的共用数据'}
     notes = []
-    done, total = reattach_detached(notes)
+    done, total = _reattach(
+        [datablock for rows in groups.values() for _kind, datablock, _name in rows], notes)
     return {'ok': True, 'notes': notes, 'summary': "已丢弃本地改动并接回 %d/%d 份" % (done, total)}

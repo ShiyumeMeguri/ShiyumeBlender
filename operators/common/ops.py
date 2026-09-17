@@ -201,43 +201,65 @@ class _Reporting:
         return {'FINISHED'}
 
 
-class SHIYUME_OT_Push(_Reporting, bpy.types.Operator):
-    """把这个文件里摘下来的共用数据**全部**推回各自的源, 并接回链接。
+SCOPE_ITEMS = (
+    ('SELECTED', "选中的", "只动选中物体身上的那几份"),
+    ('FILE', "整个文件", "这个文件里所有摘开的都算上"),
+)
 
-    一次推整个文件, 不用挨个选网格: 骨架、全部子网格、材质, 谁摘开了就推谁。
+
+class _Scoped(_Reporting):
+    """范围是一个属性而不是两个算子: 推送/还原各自只有一套逻辑, 面板上画两次就够了。
+
+    poll 只问"文件里有没有摘开的" —— 它是类方法, 拿不到实例上那个 scope, 想按范围判就只能
+    把属性读成别人那一次点击留下的值。范围对不上由 execute 说人话, 不在按钮灰不灰上耍心机。
+    """
+
+    scope: bpy.props.EnumProperty(name="范围", items=SCOPE_ITEMS, default='SELECTED')
+
+    @classmethod
+    def poll(cls, context):
+        return bool(linkage.detached_datablocks())
+
+    def _targets(self, context):
+        if self.scope == 'FILE':
+            return push.all_detached()
+        return push.detached_of(context.selected_objects)
+
+
+class SHIYUME_OT_Push(_Scoped, bpy.types.Operator):
+    """把摘下来的共用数据推回唯一源, 并接回链接。
+
+    范围选「选中的」就只推手上这几个网格, 选「整个文件」就一口气全推 —— 改完一件推一件,
+    还是攒一批一起推, 都行。
 
     源被覆盖之前, 它的上一版先按 RuriAutoSave 的规则移进备份目录 —— 落点与命名走它那一套,
     同盘是一次 rename, 不拷贝。
 
     源写完之后本文件会**存盘并重新打开一次**: 库的内容变了而 Blender 不会自己去重读, 不重读
-    就接不回正确的链接。撤销历史会因此清掉, 但那一步之前已经存过盘, 没有数据会丢。
+    就接不回正确的链接。撤销历史会因此清掉, 但那一步之前已经存过盘, 没有数据会丢。没推的那些
+    照旧摘着, 不受影响。
     """
 
     bl_idname = "shiyume.common_push"
-    bl_label = "一键推送全部改动"
+    bl_label = "推送回唯一源"
     bl_options = {'REGISTER'}
 
-    @classmethod
-    def poll(cls, context):
-        return bool(linkage.detached_datablocks())
-
     def execute(self, context):
-        return self._done(push.push_all())
+        return self._done(push.push(self._targets(context)))
 
 
-class SHIYUME_OT_DiscardLocal(_Reporting, bpy.types.Operator):
-    """丢掉本地改动, 把摘下来的数据块直接接回源 (改错了要放弃时用)。"""
+class SHIYUME_OT_Discard(_Scoped, bpy.types.Operator):
+    """丢掉本地改动, 把摘下来的数据块直接接回源 (改错了要放弃时用)。
+
+    范围同推送: 可以只还原手上这一个网格, 不牵连别的。
+    """
 
     bl_idname = "shiyume.common_discard"
     bl_label = "放弃本地改动并接回源"
     bl_options = {'REGISTER', 'UNDO'}
 
-    @classmethod
-    def poll(cls, context):
-        return bool(linkage.detached_datablocks())
-
     def execute(self, context):
-        return self._done(push.discard_local())
+        return self._done(push.discard(self._targets(context)))
 
 
 classes = (
@@ -245,5 +267,5 @@ classes = (
     SHIYUME_OT_CharDetach,
     SHIYUME_OT_CharUnbind,
     SHIYUME_OT_Push,
-    SHIYUME_OT_DiscardLocal,
+    SHIYUME_OT_Discard,
 )
