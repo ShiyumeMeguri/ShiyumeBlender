@@ -1,13 +1,20 @@
-"""后台执行体: 在共用文件里落地一批推送, 然后保存一次。
+"""后台执行体: 在唯一源里用推上来的数据块整份替换同名那几份, 然后存一次盘。
 
-由 ops.py 以
-    blender -b <共用文件> --python worker.py -- <payload.json 路径>
-启动。跑在一个干净的后台进程里, **不加载插件** —— 只按文件路径 import 两个纯数据
-模块 (mesh_data / rig_data), 好让"怎么合并"这件事只有一份实现, 拉取和推送共用。
+由 push.py 以 `blender -b <源文件> --python worker.py -- <payload.json>` 启动。跑在干净的
+后台进程里, 不 import 插件的任何东西 —— 它要做的事只是"换数据块", 不需要知道链接那一套。
 
-一次调用处理一整个角色 (骨架 + 全部子网格), 全部落地后只存一次盘。
+为什么是整份替换而不是逐项合并: 工作文件里那份本来就是从源上摘下来的同一份, 血统一致,
+不存在"两边各改了一半要对齐"的问题。合并代码全删了。
 
-结果以一行 `@SHIYUMESYNC {json}` 回传, 调用方只解析这一行。
+`dst.<类型>` 的有序返回是唯一可靠的回查方式: append 撞名会加 `.001` 后缀, 按名字回查
+会认错人。
+
+存盘前把保存版本数钉成 1, 于是 Blender 自己把旧内容留成 `<源>.blend1`。**收走它的不是这里**
+—— 这一下是一次货真价实的保存, RuriAutoSave 自己的 save_post 会把那份旧内容按它那一套规则
+收进备份树。备份的规则只有它那一份, 这边再收一次就是第二处真源。
+
+这里只做一件事: 存完看一眼 `.blend1` 还在不在, 把结论回传。它还在就说明没人收 —— 那是
+RuriAutoSave 没装或没配备份根, 得让人知道, 而不是当作备份成功了。
 """
 
 import json
@@ -16,11 +23,8 @@ import sys
 
 import bpy
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import mesh_data                                                  # noqa: E402
-import rig_data                                                   # noqa: E402
-
 MARKER = "@SHIYUMESYNC "
+REQUIRED_SAVE_VERSION = 1
 
 
 def emit(payload):
@@ -32,89 +36,122 @@ def fail(message):
     sys.exit(0)
 
 
-def take(carrier, names, material_names):
-    """把中转文件里的网格数据块 append 进来, 按请求顺序返回。
-
-    用 `dst.meshes` 而不是去 diff bpy.data.meshes: 出了 with 块它就是真正的数据块
-    列表, 顺序与请求一致 —— append 会给重名的加 `.001` 后缀, 按名字回查会对错人。
-
-    material_names 是挂在物体上 ('OBJECT' 那一路) 的材质 —— 它们不是网格的依赖, 不点名
-    就带不进来。网格自己的材质 / 贴图 / 节点组是依赖, 跟着网格自动进来。
-    """
-    before_libs = {lib.name_full for lib in bpy.data.libraries}
-    with bpy.data.libraries.load(carrier, link=False) as (src, dst):
-        missing = [n for n in names if n not in src.meshes]
-        if missing:
-            fail("中转文件里没有网格 %s; 现有 %s" % (missing, sorted(src.meshes)[:20]))
-        missing_materials = [n for n in material_names if n not in src.materials]
-        if missing_materials:
-            fail("中转文件里没有材质 %s; 现有 %s"
-                 % (missing_materials, sorted(src.materials)[:20]))
-        dst.meshes = list(names)
-        dst.materials = list(material_names)
-    loaded = list(dst.meshes)
-    # 中转文件事后会被删掉, 绝不能把指向它的库记录留在共用文件里
-    for lib in list(bpy.data.libraries):
-        if lib.name_full not in before_libs and not lib.users_id:
-            bpy.data.libraries.remove(lib)
+def take(carrier, wanted):
+    """把中转文件里点名的数据块 append 进来, 按请求顺序返回 {类型: [数据块]}。"""
+    before = {library.name_full for library in bpy.data.libraries}
+    with bpy.data.libraries.load(carrier, link=False) as (source, target):
+        for kind, names in wanted.items():
+            available = getattr(source, kind)
+            missing = [name for name in names if name not in available]
+            if missing:
+                fail("中转文件的 %s 里没有 %s; 现有 %s"
+                     % (kind, missing, sorted(available)[:20]))
+            setattr(target, kind, list(names))
+    loaded = {kind: list(getattr(target, kind)) for kind in wanted}
+    for library in list(bpy.data.libraries):
+        if library.name_full not in before and not library.users_id:
+            bpy.data.libraries.remove(library)
     return loaded
+
+
+def shape_values(datablock):
+    keys = getattr(datablock, "shape_keys", None)
+    return {block.name: block.value for block in keys.key_blocks} if keys else {}
+
+
+def apply_shape_values(datablock, values):
+    keys = getattr(datablock, "shape_keys", None)
+    if keys is None:
+        return
+    for name, value in values.items():
+        block = keys.key_blocks.get(name)
+        if block is not None:
+            block.value = value
+
+
+def replace(kind, source_name, incoming):
+    """源里那份让位给推上来的这份: 先把用户接过去, 再删旧的, 最后把名字让出来。
+
+    顺序不能换。旧的还在的时候改名会让新的拿到 `.001`, 而名字正是下一次推送回查的依据。
+    返回改名之前用着旧数据块的那些物体。
+
+    形态键的**形状**是源的资产, 跟着数据块过去; **值**是每个文件自己的体型设定, 所以源上
+    原来是多少, 换完还得是多少 —— 不接这一手, 推一次就把源的体型按成工作文件的。
+    """
+    collection = getattr(bpy.data, kind)
+    existing = collection.get(source_name)
+    if existing is None:
+        fail("源文件的 %s 里没有 %r" % (kind, source_name))
+    if existing.library is not None:
+        fail("源文件里的 %s / %r 自己也是链接来的, 不能在这里改" % (kind, source_name))
+    if existing is incoming:
+        fail("源里那份和推上来的是同一个数据块 %r" % source_name)
+
+    users = [obj for obj in bpy.data.objects if obj.data is existing]
+    kept = shape_values(existing)
+    existing.user_remap(incoming)
+    collection.remove(existing)
+    incoming.name = source_name
+    apply_shape_values(incoming, kept)
+    return users
+
+
+def apply_vertex_groups(objects, names):
+    """顶点组的**名字**住在物体上, 权重住在网格里, 两头必须同时换。
+
+    只换网格会让权重接到旧的名字表上 —— 组的索引没变, 名字对不上, 表现是权重看着还在,
+    绑定却接错骨头。
+    """
+    for obj in objects:
+        for group in list(obj.vertex_groups):
+            obj.vertex_groups.remove(group)
+        for name in names:
+            obj.vertex_groups.new(name=name)
 
 
 def main():
     try:
         with open(sys.argv[sys.argv.index('--') + 1], encoding='utf-8') as handle:
             payload = json.load(handle)
-    except (ValueError, IndexError, OSError) as exc:
-        fail("payload 读取失败: %s" % exc)
+    except (ValueError, IndexError, OSError) as error:
+        fail("payload 读取失败: %s" % error)
 
-    notes = []
+    kinds = payload.get('kinds', {})
+    wanted = {kind: [row['carrier_name'] for row in rows]
+              for kind, rows in kinds.items() if rows}
+    if not wanted:
+        fail("没有任何要推送的数据块")
+
+    loaded = take(payload['carrier'], wanted)
     lines = []
+    for kind, rows in kinds.items():
+        if not rows:
+            continue
+        incoming_list = loaded[kind]
+        if len(incoming_list) != len(rows):
+            fail("中转文件里取回 %d 个 %s, 请求的是 %d 个"
+                 % (len(incoming_list), kind, len(rows)))
+        for row, incoming in zip(rows, incoming_list):
+            users = replace(kind, row['source_name'], incoming)
+            if row.get('vertex_groups') is not None:
+                apply_vertex_groups(users, row['vertex_groups'])
+            lines.append("%s/%s" % (kind, row['source_name']))
 
-    meshes = payload.get('meshes', [])
-    rigs = payload.get('rigs', [])
-    wanted = [row['carrier_mesh'] for row in meshes]
-    if wanted:
-        known = mesh_data.known_names()      # append 之前的名录, 用来认出带进来的那几份
-        loaded = take(payload['carrier'], wanted, payload.get('object_materials', []))
-        if len(loaded) != len(meshes):
-            fail("中转文件里取回 %d 个网格, 请求的是 %d 个" % (len(loaded), len(meshes)))
-        # 材质 / 贴图 / 节点组都是新造的一份, 先让它们接管共用文件里同名的那份: 共用文件里
-        # 原来用着这份材质的东西 (没在这次推送里的网格也算) 跟着一起更新, 名字也不会漂
-        adopted, adopt_notes = mesh_data.adopt_appended(known)
-        notes.extend(adopt_notes)
-        if adopted:
-            lines.append("按名覆盖 %d 份材质/贴图/节点组: %s"
-                         % (len(adopted), ', '.join(adopted)))
-        # 贴图路径必须按工作文件那边的原样写回: append 会拿中转文件 (在临时目录里) 当基准
-        # 把相对路径重算一遍, 算出来指向临时目录, 共用文件里就是一片紫
-        changed, path_notes = mesh_data.apply_image_paths(payload.get('images', {}))
-        notes.extend(path_notes)
-        if changed:
-            lines.append("贴图路径按工作文件写回 %d 张" % changed)
-        for row, incoming in zip(meshes, loaded):
-            target = bpy.data.objects.get(row['target_obj'])
-            if target is None or target.type != 'MESH':
-                fail("共用文件里没有网格物体 %r" % row['target_obj'])
-            summary, extra = mesh_data.swap_mesh(target, incoming, row['vertex_groups'],
-                                                 row.get('weighted'), row.get('slots'))
-            lines.append(summary)
-            notes.extend("%s: %s" % (row['target_obj'], n) for n in extra)
-
-    for row in rigs:
-        target = bpy.data.objects.get(row['target_obj'])
-        if target is None or target.type != 'ARMATURE':
-            fail("共用文件里没有骨架物体 %r" % row['target_obj'])
-        lines.append("%s: %s" % (row['target_obj'], rig_data.apply(target, row['snapshot'])))
-
-    if not lines:
-        fail("没有任何要推送的内容")
-
+    bpy.context.preferences.filepaths.save_version = REQUIRED_SAVE_VERSION
+    previous = bpy.data.filepath + str(REQUIRED_SAVE_VERSION)
+    target = bpy.data.filepath
     bpy.ops.wm.save_mainfile()
     emit({
         'ok': True,
-        'notes': notes,
-        'summary': "已写入 %s: %s" % (os.path.basename(bpy.data.filepath), "; ".join(lines)),
+        'written': lines,
+        'archived': not os.path.exists(previous),
+        'summary': "已写入 %s: %s" % (os.path.basename(target), ", ".join(lines)),
     })
 
 
-main()
+try:
+    main()
+except SystemExit:
+    raise
+except Exception as error:      # noqa: BLE001 闸门抛出来的要原样传回去, 别只剩一截栈
+    emit({'ok': False, 'error': "%s: %s" % (type(error).__name__, error)})

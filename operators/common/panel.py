@@ -1,104 +1,103 @@
-"""共用角色数据的面板。
+"""共用数据的面板。
 
-放在 Item 页: 它回答的是"当前选中的这个东西绑到哪儿、推一下拉一下", 和变换/尺寸
-一样属于物体属性的即时查看, 用的时候不该再切标签页。
+放在 Item 页: 它回答的是"当前选中这东西的数据跟着谁、现在是不是摘开的", 和变换/尺寸一样
+属于物体属性的即时查看, 用的时候不该再切标签页。
+
+面板顶上那条"待推送"是文件级的 —— 摘开的数据块是这个文件私有的岔路, 不收回去就不叫单一源,
+所以它必须在任何一个物体的面板上都看得见, 而不是只在摘开的那个物体上。
 """
 
 import os
 
 import bpy
 
-from . import binding
-from . import warn
-from .ops import active_character
+from . import linkage
+
+STATE_TEXT = {
+    'attached': ("跟着源 (可直接用, 要改按 Tab)", 'LINKED'),
+    'detached': ("已摘下, 待推送", 'UNLINKED'),
+    'linked': ("纯链接, 只读", 'LIBRARY_DATA_DIRECT'),
+    'free': ("本文件自己的", 'BLANK1'),
+}
 
 
-class SHIYUME_PT_CommonCharacter(bpy.types.Panel):
-    bl_label = "共用角色数据 (按需同步)"
-    bl_idname = "SHIYUME_PT_CommonCharacter"
+def state_of(datablock):
+    if datablock is None or linkage.collection_of(datablock) is None:
+        return None
+    if linkage.is_attached(datablock):
+        return 'attached'
+    if linkage.is_detached(datablock):
+        return 'detached'
+    if datablock.library is not None:
+        return 'linked'
+    return 'free'
+
+
+class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
+    bl_label = "共用数据 (链接到唯一源)"
+    bl_idname = "SHIYUME_PT_CommonDatablocks"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Item'
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type in binding.KINDS
+        return context.active_object is not None
 
     def draw(self, context):
         layout = self.layout
-        obj = context.active_object
-        rig, meshes = active_character(context)
+        self._draw_pending(layout)
+        self._draw_active(context, layout)
 
-        found = warn.scan()
-        if found:
-            alert = layout.box()
-            alert.alert = True
-            alert.label(text="共用数据过时, 别在这份上改了再推", icon='ERROR')
-            for line in warn.summarize(found):
-                alert.label(text=line)
-            alert.label(text="先拉取, 再改", icon='IMPORT')
-
-        if rig is None:
-            layout.label(text="%s 没蒙皮到任何骨架" % obj.name, icon='INFO')
-            layout.label(text="单个物体也能绑, 用下面的按钮", icon='BLANK1')
-        else:
-            members = [rig] + meshes
-            bound = [o for o in members if binding.get(o) is not None]
-            files = {binding.get(o)[0] for o in bound}
-            box = layout.box()
-            box.label(text="角色 %s" % rig.name, icon='OUTLINER_OB_ARMATURE')
-            box.label(text="骨架 1 + 子网格 %d, 已绑 %d/%d"
-                      % (len(meshes), len(bound), len(members)), icon='MESH_DATA')
-            for path in sorted(files):
-                box.label(text="→ %s" % os.path.basename(path), icon='FILE_BLEND')
-                if not os.path.isfile(path):
-                    box.label(text="   来源文件不存在！", icon='ERROR')
-            if len(files) > 1:
-                box.label(text="子网格绑到了不同的文件", icon='INFO')
-
-            col = layout.column(align=True)
-            col.enabled = bool(bound) and all(os.path.isfile(p) for p in files)
-            col.operator("shiyume.char_pull", icon='IMPORT')
-            col.operator("shiyume.char_pull_meshes", icon='MESH_DATA')
-            col.operator("shiyume.char_push", icon='EXPORT')
-            layout.operator("shiyume.char_bind", icon='FILE_BLEND')
-            if bound:
-                layout.operator("shiyume.char_unbind", icon='X')
-
-        layout.separator()
-        head = layout.row()
-        head.label(text="单个: %s" % obj.name,
-                   icon='OUTLINER_OB_MESH' if obj.type == 'MESH' else 'OUTLINER_OB_ARMATURE')
-
-        bound = binding.get(obj)
-        if bound is None:
-            layout.label(text="未绑定共用来源", icon='UNLINKED')
-        else:
-            path, source_name = bound
-            info = layout.box()
-            info.label(text="→ %s" % os.path.basename(path), icon='FILE_BLEND')
-            info.label(text="   来源物体: %s" % source_name, icon='OBJECT_DATA')
+    def _draw_pending(self, layout):
+        groups = linkage.detached_datablocks()
+        if not groups:
+            layout.label(text="没有摘开的数据, 全部跟着源", icon='CHECKMARK')
+            return
+        count = sum(len(rows) for rows in groups.values())
+        box = layout.box()
+        box.alert = True
+        box.label(text="%d 份数据摘开了, 还没推回源" % count, icon='UNLINKED')
+        for path, rows in sorted(groups.items()):
+            box.label(text="→ %s" % os.path.basename(path), icon='FILE_BLEND')
+            for _kind, datablock, source_name in rows[:6]:
+                box.label(text="    %s" % source_name, icon='DOT')
+            if len(rows) > 6:
+                box.label(text="    ...还有 %d 份" % (len(rows) - 6))
             if not os.path.isfile(path):
-                info.label(text="来源文件不存在！", icon='ERROR')
-            row = layout.row(align=True)
-            row.enabled = os.path.isfile(path)
-            row.operator("shiyume.common_pull", icon='IMPORT')
-            row.operator("shiyume.common_push", icon='EXPORT')
-            row = layout.row(align=True)
-            pick = row.operator("shiyume.common_bind_pick", text="换来源物体",
-                                icon='OBJECT_DATA')
-            pick.filepath = path
-            pick.kind = obj.type
-            row.operator("shiyume.common_unbind", text="单独解除", icon='X')
+                box.label(text="    源文件不存在!", icon='ERROR')
+        column = layout.column(align=True)
+        column.operator("shiyume.common_push", icon='EXPORT')
+        column.operator("shiyume.common_reattach_all", icon='LOOP_BACK')
 
-        if bpy.data.libraries:
-            layout.separator()
-            libbox = layout.box()      # 别叫 warn: 会把模块级的 warn 遮成局部变量
-            libbox.label(text="文件里还有 %d 个库链接" % len(bpy.data.libraries),
-                         icon='LIBRARY_DATA_DIRECT')
-            libbox.operator("shiyume.common_make_local", icon='UNLINKED')
-        layout.label(text="数据始终是本地的，随时可编辑", icon='CHECKMARK')
+    def _draw_active(self, context, layout):
+        layout.separator()
+        obj = context.active_object
+        datablock = obj.data
+        state = state_of(datablock)
+        head = layout.row()
+        head.label(text=obj.name, icon='OBJECT_DATA')
+        if state is None:
+            layout.label(text="这个物体的数据不归共用数据管", icon='INFO')
+            return
+
+        text, icon = STATE_TEXT[state]
+        box = layout.box()
+        box.label(text="%s: %s" % (datablock.name, text), icon=icon)
+        reference = linkage.source_reference(datablock)
+        if reference is not None:
+            path, source_name = reference
+            box.label(text="→ %s / %s" % (os.path.basename(path), source_name),
+                      icon='FILE_BLEND')
+            if not os.path.isfile(path):
+                box.label(text="源文件不存在!", icon='ERROR')
+
+        if state == 'attached':
+            layout.operator("shiyume.detach_active", icon='UNLINKED')
+        if state == 'free':
+            layout.operator("shiyume.common_bind", icon='LINKED')
+        if state in ('attached', 'detached'):
+            layout.operator("shiyume.common_unbind", icon='X')
 
 
-classes = (SHIYUME_PT_CommonCharacter,)
+classes = (SHIYUME_PT_CommonDatablocks,)
