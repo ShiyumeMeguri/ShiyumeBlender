@@ -9,7 +9,11 @@ Blender 没有"算子失败"钩子, 所以只能抢在前面。Tab 挂在 Object
 插件键位图先于默认键位图求值, 于是这一下先落到本算子手里: 该摘的摘掉, 再原样转发给
 `object.editmode_toggle`。不该摘的一个字不动, 行为与原生完全一致。
 
-头部那个模式下拉菜单走的是 RNA 属性不是算子, 拦不到; 面板上那个按钮就是给那条路兜底的。
+头部那个模式下拉菜单走的是 RNA 属性不是算子, 拦不到; 面板上「摘下整个角色的共用数据」
+就是给那条路兜底的。
+
+这里只摘 Tab 这一下真会带进编辑模式的那几个 (选中的物体), 不摘整个角色 —— 编辑一条
+裙子不该把整副骨架和别的部件都变成待推送。整角色一次摘是面板上那个按钮的事。
 """
 
 import bpy
@@ -69,39 +73,13 @@ class SHIYUME_OT_EditTakeover(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class SHIYUME_OT_DetachActive(bpy.types.Operator):
-    """把选中物体的数据块从源上摘下来 (不进编辑模式)。
-
-    头部的模式下拉菜单拦不到, 用那条路进编辑模式之前先按这个。
-    """
-
-    bl_idname = "shiyume.detach_active"
-    bl_label = "摘下共用数据以便编辑"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        return bool(_pending(context))
-
-    def execute(self, context):
-        names = []
-        for datablock in _pending(context):
-            try:
-                linkage.detach(datablock)
-            except Exception as error:          # noqa: BLE001
-                self.report({'ERROR'}, "%s 摘不下来: %s" % (datablock.name, error))
-                return {'CANCELLED'}
-            names.append(datablock.name)
-        self.report({'INFO'}, "已摘下 %d 份: %s" % (len(names), ", ".join(names[:6])))
-        return {'FINISHED'}
-
-
-classes = (SHIYUME_OT_EditTakeover, SHIYUME_OT_DetachActive)
+classes = (SHIYUME_OT_EditTakeover,)
 
 _keymap_items = []
 
 
 def register_keymap():
+    """Tab 挂进插件键位图。插件键位图先于默认键位图求值, 所以这一下先落到本算子手里。"""
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is None:
         return

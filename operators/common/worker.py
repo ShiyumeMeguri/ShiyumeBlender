@@ -96,6 +96,26 @@ def replace(kind, source_name, incoming):
     return users
 
 
+def apply_materials(mesh, names):
+    """材质槽按**名字**在源里重新接一遍, 返回源里找不到的那些。
+
+    工作文件里那些材质本来就是从这个源链接过去的, 写进中转文件时只留下一条"指向源文件的
+    引用"; 把这个网格 append 回源自己身上, 那条引用就指向了自己, 解不开 —— 现场是源里的材质
+    关联被打断, 重新打开工作文件报 `LIB: Material: 'X' missing`。
+
+    材质槽是源的资产, 推送本来就不该改它, 所以这里按名字接回源自己那几份就是正解。源里没有
+    的名字只能留空槽 —— 那是本文件自造、从没绑过源的材质, 必须报出来, 不能默默吞掉。
+    """
+    missing = []
+    mesh.materials.clear()
+    for name in names:
+        material = bpy.data.materials.get(name) if name else None
+        if name and material is None:
+            missing.append(name)
+        mesh.materials.append(material)
+    return missing
+
+
 def apply_vertex_groups(objects, names):
     """顶点组的**名字**住在物体上, 权重住在网格里, 两头必须同时换。
 
@@ -124,6 +144,7 @@ def main():
 
     loaded = take(payload['carrier'], wanted)
     lines = []
+    notes = []
     for kind, rows in kinds.items():
         if not rows:
             continue
@@ -135,6 +156,11 @@ def main():
             users = replace(kind, row['source_name'], incoming)
             if row.get('vertex_groups') is not None:
                 apply_vertex_groups(users, row['vertex_groups'])
+            if row.get('materials') is not None:
+                missing = apply_materials(incoming, row['materials'])
+                if missing:
+                    notes.append("%s 的材质槽在源里找不到, 留空了: %s"
+                                 % (row['source_name'], ", ".join(missing)))
             lines.append("%s/%s" % (kind, row['source_name']))
 
     bpy.context.preferences.filepaths.save_version = REQUIRED_SAVE_VERSION
@@ -144,6 +170,7 @@ def main():
     emit({
         'ok': True,
         'written': lines,
+        'notes': notes,
         'archived': not os.path.exists(previous),
         'summary': "已写入 %s: %s" % (os.path.basename(target), ", ".join(lines)),
     })

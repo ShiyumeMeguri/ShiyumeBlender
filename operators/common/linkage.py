@@ -101,8 +101,27 @@ def apply_shape_values(datablock, values):
     return applied
 
 
+def linked_datablock(path, collection_name, source_name):
+    """这个源的这个数据块是不是已经链在文件里了; 没有就 None。"""
+    wanted = absolute_path(path)
+    for datablock in getattr(bpy.data, collection_name):
+        if (datablock.library is not None
+                and datablock.name == source_name
+                and absolute_path(datablock.library.filepath) == wanted):
+            return datablock
+    return None
+
+
 def link_datablock(path, collection_name, source_name):
-    """从源文件里链接一个数据块进来。返回链接到的那一份。"""
+    """从源文件里链接一个数据块进来。返回链接到的那一份。
+
+    已经链过就直接用现成的: 再 load 一次不会出第二份, 只会让 Blender 打一行
+    `WARNING ... is already linked`, 外加白开一次文件。绑定整个角色时映射那一步已经把这些
+    数据块拖进来了, 所以这条命中是常态而不是例外。
+    """
+    existing = linked_datablock(path, collection_name, source_name)
+    if existing is not None:
+        return existing
     with bpy.data.libraries.load(path, link=True) as (source, target):
         available = getattr(source, collection_name)
         if source_name not in available:

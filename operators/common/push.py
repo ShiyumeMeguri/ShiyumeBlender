@@ -38,11 +38,20 @@ def _objects_using(datablock):
     return [obj for obj in bpy.data.objects if obj.data is datablock]
 
 
+def _material_name(material):
+    """这个材质在源文件里叫什么; 本文件自己造的就用它本地的名字。"""
+    if material is None:
+        return None
+    reference = linkage.source_reference(material)
+    return reference[1] if reference is not None else material.name
+
+
 def _row(kind, datablock, source_name):
     row = {'carrier_name': datablock.name, 'source_name': source_name}
     if kind == 'meshes':
         users = _objects_using(datablock)
         row['vertex_groups'] = [group.name for group in users[0].vertex_groups] if users else []
+        row['materials'] = [_material_name(material) for material in datablock.materials]
     return row
 
 
@@ -113,6 +122,7 @@ def _write_sources(groups, notes):
             return lines, result
         if not result.get('archived'):
             _archive_source(path, notes)
+        notes.extend(result.get('notes', ()))
         lines.append(result.get('summary', ''))
     return lines, None
 
