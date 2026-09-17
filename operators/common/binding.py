@@ -123,11 +123,49 @@ def source_names(path):
         return sorted(src.objects), set(src.meshes), set(src.armatures)
 
 
+def _suffix_stem(name):
+    """剥掉 append 撞名时加的 `.NNN` 后缀; 没有后缀就原样返回。"""
+    head, dot, tail = name.rpartition(".")
+    return head if dot and len(tail) == 3 and tail.isdigit() else name
+
+
+def _origins(dragged, source_objects, before_objects):
+    """临时 append 进来的物体 -> 它在源文件里叫什么。
+
+    Blender 只在撞名时给新 ID 加 `.NNN` 后缀, 所以反推是确定的:
+      · 名字本身就在源文件名录里, 而本地原来没有这个名字 -> 没撞名, 原名就是它
+      · 否则 -> 撞了名; 剥掉后缀就是原名, 而撞上的那个本地物体正是它的本地对应物
+
+    唯一能让这条判据认错人的情形, 是源文件里同时存在 `X` 和 `X.001` 两个物体 ——
+    那时光看名字分不出谁是谁, 当场报错, 绝不猜。
+    """
+    ambiguous = {_suffix_stem(n) for n in source_objects
+                 if _suffix_stem(n) != n and _suffix_stem(n) in source_objects}
+    out = {}
+    for obj in dragged:
+        stem = _suffix_stem(obj.name)
+        if stem in ambiguous:
+            raise RuntimeError(
+                "源文件里同时有 %r 和带 .NNN 后缀的同名物体, 临时物体 %r 反推不出原名"
+                % (stem, obj.name))
+        if obj.name in source_objects and obj.name not in before_objects:
+            out[obj.name] = obj.name
+        elif stem in source_objects:
+            out[obj.name] = stem
+        else:
+            raise RuntimeError("临时物体 %r 在源文件名录里找不到对应的原名" % obj.name)
+    return out
+
+
 def borrow_many(path, object_names):
     """把源文件里的若干物体临时 append 进来, 用完即弃。
 
-    返回 (按请求顺序的物体列表, 收尾函数)。收尾函数会连它们带进来的东西一起清掉 ——
-    调用方想留下其中某个数据块 (比如网格), 先把它挂到本地物体上, 引用数不为零就会被跳过。
+    返回 (按请求顺序的物体列表, 收尾函数, 临时名->源文件原名)。收尾函数会连它们带进来
+    的东西一起清掉 —— 调用方想留下其中某个数据块 (比如网格), 先把它挂到本地物体上,
+    引用数不为零就会被跳过。
+
+    第三个返回值是给"按名字记指针"的快照用的: 借来的东西名字上都带着 append 加的
+    `.001`, 直接记下来等于记了一个马上就要被删掉的名字。
 
     两个必须踩对的点:
       · 用 `dst.objects` 的有序返回, 不要去 diff bpy.data.objects。append 一个网格
@@ -141,9 +179,11 @@ def borrow_many(path, object_names):
         if missing:
             raise KeyError("%s 里没有物体 %s；现有: %s"
                            % (os.path.basename(path), missing, sorted(src.objects)[:20]))
+        source_objects = set(src.objects)
         dst.objects = list(object_names)
     wanted = list(dst.objects)
     dragged = [o for o in bpy.data.objects if o.name_full not in before_objects]
+    origins = _origins(dragged, source_objects, before_objects)
 
     def done():
         for obj in dragged:
@@ -161,13 +201,13 @@ def borrow_many(path, object_names):
             if arm.users == 0 and not arm.use_fake_user:
                 bpy.data.armatures.remove(arm)
 
-    return wanted, done
+    return wanted, done, origins
 
 
 def borrow(path, object_name):
     """借一个物体。见 borrow_many。"""
-    objects, done = borrow_many(path, [object_name])
-    return objects[0], done
+    objects, done, origins = borrow_many(path, [object_name])
+    return objects[0], done, origins
 
 
 def character_of(rig):

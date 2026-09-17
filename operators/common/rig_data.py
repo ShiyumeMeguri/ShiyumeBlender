@@ -62,6 +62,110 @@ def _constraint_props(con):
     return out
 
 
+def _resolve(name, rig, source_rig_name):
+    """来源里的物体名 -> 本文件里的物体。
+
+    指向"来源骨架自己"的必须先判, 不能先去 bpy.data.objects 里查名字: 拉取时来源骨架是
+    临时 append 进来的, 名字被加了 `.001` 后缀也确实存在, 按名字一查就查到那个临时物体,
+    等它被清掉, 约束的 target 就全变成 None —— 实测 79 根骨的约束集体失效,
+    Pin/Curl 全断, 手指链整条飘掉 0.16 m。
+    """
+    if not name:
+        return None
+    if name == source_rig_name:
+        return rig
+    return bpy.data.objects.get(name)
+
+
+def _bone_of_path(data_path):
+    """pose.bones["X"].constraints["Y"].influence -> X"""
+    try:
+        return data_path.split('"')[1]
+    except IndexError:
+        return None
+
+
+def _driver_rows(rig, known_bones):
+    """约束上的驱动器。
+
+    驱动器**不是约束的属性**: 重建约束它就没了, 而且没有任何报错 —— 实测拉取一次
+    就把 4 条 ik_on 驱动器清零, IK 影响力从被驱动的 0 变成固定 1.0, IK 当场接管四肢,
+    动画整个变样。所以它必须是骨架绑定数据的一部分, 跟着一起搬。
+    """
+    ad = rig.animation_data
+    rows = []
+    for fcurve in (ad.drivers if ad else []):
+        if ".constraints[" not in fcurve.data_path:
+            continue
+        bone = _bone_of_path(fcurve.data_path)
+        if bone is None or bone not in known_bones:
+            continue
+        drv = fcurve.driver
+        rows.append({
+            "path": fcurve.data_path, "index": fcurve.array_index,
+            "type": drv.type, "expression": drv.expression,
+            "use_self": drv.use_self, "mods": len(fcurve.modifiers),
+            "vars": [{"name": v.name, "type": v.type,
+                      "targets": [{"id_type": getattr(t, "id_type", "OBJECT"),
+                                   "id": t.id.name if t.id else None,
+                                   "data_path": t.data_path,
+                                   "bone_target": getattr(t, "bone_target", ""),
+                                   "transform_type": getattr(t, "transform_type", "LOC_X"),
+                                   "transform_space": getattr(t, "transform_space",
+                                                              "WORLD_SPACE"),
+                                   "rotation_mode": getattr(t, "rotation_mode", "AUTO")}
+                                  for t in v.targets]}
+                     for v in drv.variables],
+        })
+    return rows
+
+
+def _apply_drivers(rig, rows, known_bones, source_rig_name):
+    """重建约束驱动器。先清掉同范围内的旧驱动器, 再按快照建。"""
+    ad = rig.animation_data or rig.animation_data_create()
+    for fcurve in list(ad.drivers):
+        if ".constraints[" not in fcurve.data_path:
+            continue
+        bone = _bone_of_path(fcurve.data_path)
+        if bone is not None and bone in known_bones:
+            ad.drivers.remove(fcurve)
+    made = 0
+    for spec in rows:
+        holder_path, _dot, prop = spec["path"].rpartition(".")
+        try:
+            holder = rig.path_resolve(holder_path)
+            # 标量属性传下标会报错, 数组属性不传又只建一条 —— 直接问 RNA
+            arr = holder.bl_rna.properties[prop].array_length
+            fcurve = rig.driver_add(spec["path"], spec["index"] if arr else -1)
+        except (ValueError, TypeError, KeyError):
+            continue                      # 约束没了就跳过, 不是致命错
+        drv = fcurve.driver
+        drv.type = spec["type"]
+        drv.expression = spec["expression"]
+        drv.use_self = spec["use_self"]
+        for vs in spec["vars"]:
+            var = drv.variables.new()
+            var.name = vs["name"]
+            var.type = vs["type"]
+            for i, ts in enumerate(vs["targets"]):
+                if i >= len(var.targets):
+                    break
+                tgt = var.targets[i]
+                if hasattr(tgt, "id_type"):
+                    tgt.id_type = ts["id_type"]
+                tgt.id = _resolve(ts["id"], rig, source_rig_name)
+                tgt.data_path = ts["data_path"]
+                if hasattr(tgt, "bone_target"):
+                    tgt.bone_target = ts["bone_target"]
+                for key in ("transform_type", "transform_space", "rotation_mode"):
+                    if hasattr(tgt, key):
+                        setattr(tgt, key, ts[key])
+        while len(fcurve.modifiers) > spec["mods"]:
+            fcurve.modifiers.remove(fcurve.modifiers[-1])
+        made += 1
+    return made
+
+
 def snapshot(rig, skip_keys=()):
     """把一副骨架读成纯数据, 好隔着进程搬。"""
     arm = rig.data
@@ -93,6 +197,7 @@ def snapshot(rig, skip_keys=()):
     return {
         "rig": rig.name,
         "bones": bones,
+        "drivers": _driver_rows(rig, bones),
         "collections": [{"name": c.name, "is_visible": c.is_visible}
                         for c in arm.collections_all],
         "constraints": constraints,
@@ -101,6 +206,32 @@ def snapshot(rig, skip_keys=()):
                   and not (isinstance(v, str) and len(v) > PROP_MAX_CHARS)
                   and k not in skip_keys},
     }
+
+
+def localize(snap, origins):
+    """把快照里记下的物体名, 从"临时 append 进来时的名字"翻回源文件里的原名。
+
+    拉取时来源骨架是临时 append 进本文件的, 它自己和被它一起拖进来的东西 (SPLINE_IK
+    的那条曲线、别的骨架…) 名字上全被加了 `.001`。快照按名字记 ID 指针, 记下的就是这些
+    临时名字; 等临时物体被清掉, 指针就查无此人 —— 实测 Penis_07 的 Spline IK 目标变成
+    None, 整条链失去曲线驱动, 而且一条错误日志都没有。
+
+    翻回原名之后, apply 侧按名字在本文件里找, 才能接到本地那份同名物体上。
+    """
+    if not origins:
+        return snap
+    snap["rig"] = origins.get(snap["rig"], snap["rig"])
+    for rows in snap["constraints"].values():
+        for row in rows:
+            for key, value in list(row.items()):
+                if key.startswith("@") and value in origins:
+                    row[key] = origins[value]
+    for spec in snap.get("drivers", []):
+        for var in spec["vars"]:
+            for target in var["targets"]:
+                if target["id"] in origins:
+                    target["id"] = origins[target["id"]]
+    return snap
 
 
 def apply(rig, snap, remove_extra=True):
@@ -183,6 +314,7 @@ def apply(rig, snap, remove_extra=True):
 
     n_con = 0
     kept_scene_only = 0
+    unresolved = []
     for pose_bone in rig.pose.bones:
         if pose_bone.name.startswith(SCENE_ONLY_BONE_PREFIXES):
             continue
@@ -200,14 +332,16 @@ def apply(rig, snap, remove_extra=True):
             for key, value in row.items():      # 先接 ID 指针, subtarget 靠它才有效
                 if not key.startswith("@"):
                     continue
-                target = bpy.data.objects.get(value)
-                if target is None and value == snap["rig"]:
-                    target = rig
-                if target is not None:
-                    try:
-                        setattr(con, key[1:], target)
-                    except (AttributeError, TypeError):
-                        pass
+                target = _resolve(value, rig, snap["rig"])
+                if target is None:
+                    # 接不上就得吼出来: 一条 target 为 None 的约束在界面上是灰的,
+                    # 不报错也不生效, 静默失效是最难发现的那一类坏
+                    unresolved.append("%s/%s -> %s" % (bone_name, row["type"], value))
+                    continue
+                try:
+                    setattr(con, key[1:], target)
+                except (AttributeError, TypeError):
+                    pass
             for key, value in row.items():
                 if key == "type" or key.startswith("@"):
                     continue
@@ -219,8 +353,16 @@ def apply(rig, snap, remove_extra=True):
                 except (AttributeError, TypeError, ValueError):
                     pass
             n_con += 1
+    n_drv = _apply_drivers(rig, snap.get("drivers", []), snap["bones"], snap["rig"])
+    # 自定义属性: 共享的是"有没有这个开关", 不是它现在拨到哪一档。
+    # ik_on 就是典型 —— 场景里是 0 (曲线管四肢), 主模型里是 1; 拉取时照抄主模型的值
+    # 会让 IK 当场接管四肢, 动画整个变样。和形态键的值同一条原则: 值是本文件的状态。
+    new_props = []
     for key, value in snap["props"].items():
+        if key in rig:
+            continue
         rig[key] = value
+        new_props.append(key)
 
     tail = ("删除 %d 根" % len(removed) if remove_extra
             else "本地独有的 %d 根原样保留%s"
@@ -228,5 +370,9 @@ def apply(rig, snap, remove_extra=True):
     warn = (("; 恢复连接时被父骨吸走的 %d 根: %s" % (len(snapped), ", ".join(snapped[:5])))
             if snapped else "")
     scene_only = ("; 场景专有的 %d 条约束原样保留" % kept_scene_only) if kept_scene_only else ""
-    return ("%d 根骨骼, %d 条约束; 新增 %d 根, %s%s%s"
-            % (len(snap["bones"]), n_con, len(added), tail, scene_only, warn))
+    props = ("; 新增自定义属性 %s" % ", ".join(new_props)) if new_props else ""
+    dead = (("; ★%d 条约束的目标在本文件里找不到: %s"
+             % (len(unresolved), ", ".join(unresolved[:5]))) if unresolved else "")
+    return ("%d 根骨骼, %d 条约束, %d 条驱动器; 新增 %d 根, %s%s%s%s%s"
+            % (len(snap["bones"]), n_con, n_drv, len(added), tail, scene_only, warn,
+               props, dead))
