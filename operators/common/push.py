@@ -67,6 +67,26 @@ def _grouped(datablocks):
     return groups
 
 
+def conflicts(groups):
+    """同一件源数据被两份不同的本地改动认领 —— 说得出名字的冲突清单, 没有就空。
+
+    一个文件里放两个模型、两个物体共用一件源数据是**正常的**: 各自一份库覆盖, 形态键的值互不
+    干扰。推送不一样 —— 源只有一份, 两份改动写进去必然只剩一份, 而剩哪份取决于遍历顺序。
+    那是静默丢改动, 只能当场拦住让人自己决定推哪个。
+    """
+    found = []
+    for path, rows in sorted(groups.items()):
+        claimed = {}
+        for _kind, datablock, source_name in rows:
+            claimed.setdefault(source_name, []).append(datablock.name)
+        for source_name, names in sorted(claimed.items()):
+            if len(names) > 1:
+                found.append("%s / %s 被 %d 份本地改动同时认领: %s"
+                             % (os.path.basename(path), source_name,
+                                len(names), ", ".join(sorted(names))))
+    return found
+
+
 def _objects_using(datablock):
     return [obj for obj in bpy.data.objects if obj.data is datablock]
 
@@ -185,6 +205,10 @@ def push(datablocks):
     work = bpy.data.filepath
     if not work:
         return {'ok': False, 'error': '本文件还没存过盘; 推送之后要重新读它, 先存一次'}
+    clash = conflicts(groups)
+    if clash:
+        return {'ok': False,
+                'error': '源只有一份, 这几件会互相覆盖, 一次只推其中一个:\n' + '\n'.join(clash)}
 
     wanted = {(path, kind, source_name)
               for path, rows in groups.items() for kind, _db, source_name in rows}

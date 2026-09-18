@@ -4,11 +4,19 @@
 修改器是这层关系的唯一真源。选中任意一个子网格都能推出整个角色, 于是绑定/摘下/解绑都按
 角色一次做完, 不用一个一个点。
 
-绑定按**物体名**对号入座, 不按数据块名: append/链接进场景之后数据块名必然被加 `.001` 后缀,
-按数据块名回源文件找, 实测 17 个里只能命中 1 个; 按物体名命中 15 个。物体名是稳定的那一头。
-对不上的直接跳过 —— 场景里本来就有主模型没有的东西 (机械骨、锚点、临时切出来的部件),
-那不是错误。
+认人分两层, **记着的身份优先, 名字只是没身份时的初次猜测**:
+
+  绑过一次的, 身份就写在物体的自定义数据里 (remember_binding), 之后一律照它认 —— 名字随便
+  怎么变都不影响。这是必须的: 一个文件里放两个模型时, 两个物体必然都想叫同一个名字, 而
+  Blender 不许重名, 于是至少有一个的名字对不上源。靠名字认人这条路在那一刻就断了。
+
+  还没有身份的, 按**物体名**猜一次, 不按数据块名: append/链接进场景之后数据块名必然被加
+  `.001` 后缀, 按数据块名回源文件找, 实测 17 个里只能命中 1 个; 按物体名命中 15 个。猜中就
+  当场把身份记下来, 这一步只走一次。猜不中的直接跳过 —— 场景里本来就有主模型没有的东西
+  (机械骨、锚点、临时切出来的部件), 那不是错误, 手动指定一次它也就有身份了。
 """
+
+import os
 
 import bpy
 
@@ -61,22 +69,55 @@ def members(context):
     return [obj for obj in context.selected_objects if obj.data is not None]
 
 
+BOUND_SOURCE_KEY = "shiyume_bound_source"
+BOUND_NAME_KEY = "shiyume_bound_name"
+
+
+def remember_binding(obj, path, source_name):
+    """身份写在物体自己身上, 不靠名字。
+
+    名字不是身份。一个文件里放两个模型时, 两个物体必然都想叫 `Mesh_Body_01` —— 那是正常用法
+    不是错误, 而 Blender 不允许重名, 于是至少有一个名字对不上源。靠名字认人这条路在那一刻就
+    断了, 所以认人的依据必须是这里记下的这一对字符串。
+
+    源改名 / 物体改名 / 撞名让位, 它都不动; 只有重新指定来源才会改写它。
+    """
+    obj[BOUND_SOURCE_KEY] = path
+    obj[BOUND_NAME_KEY] = source_name
+
+
+def binding_of(obj):
+    """物体记着的身份 -> (源文件绝对路径, 源里的数据块名) 或 None。"""
+    if obj is None:
+        return None
+    path = obj.get(BOUND_SOURCE_KEY)
+    name = obj.get(BOUND_NAME_KEY)
+    if not path or not name:
+        return None
+    return os.path.abspath(bpy.path.abspath(path)), name
+
+
+def forget_binding(obj):
+    hit = False
+    for key in (BOUND_SOURCE_KEY, BOUND_NAME_KEY):
+        if key in obj.keys():
+            del obj[key]
+            hit = True
+    return hit
+
+
 def align_name(obj, datablock):
-    """物体名跟着它的数据块走。
+    """名字空着就跟数据块对齐, 被别的物体占着就保持原样。
 
-    手动指定之后两边必须一模一样, 否则下一次自动对号入座又对不上 —— 那正是当初断链的成因:
-    源改了名, 老模型的物体名还留在原地, 按名字就再也认不出它该挂谁。
-
-    名字被别的物体占着时**报错**, 不替人改名: 那说明场景里有两个物体都认领同一件共用体, 该
-    先把重复处理掉。偷偷把别人改成 `X_旧` 看着像帮忙, 实际是在用户场景里动了他没让动的东西,
-    而且下次他找不到那个物体。
+    对齐只是让人看着顺眼, **不是身份** —— 身份在 remember_binding 记的那一对字符串上。所以
+    撞名不是错误, 也不去动占着名字的那个物体: 一个文件里两个模型共用同一件身体, 本来就只能
+    有一个叫得上那个名字。
     """
     if obj.name == datablock.name:
         return False
     squatter = bpy.data.objects.get(datablock.name)
     if squatter is not None and squatter is not obj:
-        raise RuntimeError("已经有一个物体叫 %r 了; 两个物体认领同一件共用数据, 先处理掉重复"
-                           % datablock.name)
+        return False
     obj.name = datablock.name
     return True
 
@@ -85,6 +126,53 @@ def source_object_names(path):
     """源文件里有哪些物体 —— 只读目录, 一个字节的数据都不加载。"""
     with bpy.data.libraries.load(path) as (source, _target):
         return list(source.objects)
+
+
+def _stem(name):
+    """剥掉 Blender 撞名时加的 `.NNN` 后缀; 没有后缀就原样返回。"""
+    head, dot, tail = name.rpartition('.')
+    return head if head and dot and len(tail) == 3 and tail.isdigit() else name
+
+
+def _match(name, available):
+    """本地物体名 -> 源里那个物体的名字; 对不上返回 None。
+
+    先精确匹配。对不上再按去后缀的词干比一次, 而且**只在源里恰好只有一个同词干的**时候才认 ——
+    有歧义宁可算未命中, 也不瞎猜: 认错人会把改动推到别的资产上。
+    """
+    if name in available:
+        return name
+    stem = _stem(name)
+    candidates = [candidate for candidate in available if _stem(candidate) == stem]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def plan(objects, path):
+    """这些物体各自该挂源里的哪一个数据块 -> [(物体, 源数据块名 或 None)]。
+
+    记着身份的照身份走, 源文件的目录一个字节都不用读 —— 名字对不上、被别人占了、干脆改成了
+    别的, 一律不影响。没身份的才按物体名猜一次, 猜中之后 bind_one 会把身份记下来, 这条路对
+    同一个物体只走一次。
+
+    身份里记的源文件跟这次要绑的不是同一个, 就退回猜 —— 那是在改挂别的源, 旧身份里那个名字
+    换个文件未必还是同一件东西。
+    """
+    remembered = []
+    guessing = []
+    for obj in objects:
+        binding = binding_of(obj)
+        if binding is not None and binding[0] == path:
+            remembered.append((obj, binding[1]))
+        else:
+            guessing.append(obj)
+    if not guessing:
+        return remembered
+
+    available = source_object_names(path)
+    guesses = [(obj, _match(obj.name, available)) for obj in guessing]
+    mapping = source_object_data_map(path, [name for _obj, name in guesses if name is not None])
+    return remembered + [(obj, mapping.get(name) if name is not None else None)
+                         for obj, name in guesses]
 
 
 def source_object_data_map(path, names):

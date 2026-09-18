@@ -4,8 +4,9 @@
 网格一次做完。推送是**整个文件**一次 —— "始终只有一个源"要成立, 文件里就不能留着一份摘开
 的数据块不管它。
 
-绑定按物体名对号入座, 对不上的跳过 (场景里本来就有主模型没有的东西)。落到数据块上的是
-物体的 `data`: 网格、材质、骨架各自跟自己的源, 物体本身永远是本地的。
+绑过一次的物体身上记着身份 (源文件 + 源数据块名), 之后一律照身份认; 还没身份的按物体名猜
+一次, 对不上的跳过 (场景里本来就有主模型没有的东西)。落到数据块上的是物体的 `data`: 网格、
+材质、骨架各自跟自己的源, 物体本身永远是本地的。
 
 没有"拉取"。数据块跟着源走, 打开文件就是源的最新状态; 唯一需要动手的时刻是"我要改它",
 那一下由 takeover 接管。
@@ -19,25 +20,6 @@ from . import character
 from . import linkage
 from . import material_sync
 from . import push
-
-
-def _stem(name):
-    """剥掉 Blender 撞名时加的 `.NNN` 后缀; 没有后缀就原样返回。"""
-    head, dot, tail = name.rpartition('.')
-    return head if head and dot and len(tail) == 3 and tail.isdigit() else name
-
-
-def _match(name, available):
-    """本地物体名 -> 源里那个物体的名字; 对不上返回 None。
-
-    先精确匹配。对不上再按去后缀的词干比一次, 而且**只在源里恰好只有一个同词干的**时候才认 ——
-    有歧义宁可算未命中, 也不瞎猜: 认错人会把改动推到别的资产上。
-    """
-    if name in available:
-        return name
-    stem = _stem(name)
-    candidates = [candidate for candidate in available if _stem(candidate) == stem]
-    return candidates[0] if len(candidates) == 1 else None
 
 
 def bindable(objects):
@@ -64,13 +46,16 @@ def detachable(objects):
 
 
 def bind_one(obj, path, source_name):
-    """把一个物体的数据块挂到源里的某个数据块上, 并把名字与材质归属一并对齐。
+    """把一个物体的数据块挂到源里的某个数据块上, 并把身份、名字、材质归属一并落定。
 
-    自动对号入座和手动指定走同一条路 —— 名字对齐、材质开关的兑现只有这一份实现, 两边不可能
-    各飘。名字必须对齐: 物体名跟数据块一模一样, 下一次自动匹配才认得出它。
+    自动对号入座和手动指定走同一条路 —— 身份、名字对齐、材质开关的兑现只有这一份实现, 两边
+    不可能各飘。
+
+    身份先记, 名字后对: 名字**对不上也没关系**, 记下来的那一对字符串才是下一次认人的依据。
     """
     kept = material_sync.snapshot(obj)
     linkage.attach(obj.data, path, source_name)
+    character.remember_binding(obj, path, source_name)
     character.align_name(obj, obj.data)
     material_sync.apply_to(obj)
     material_sync.restore(obj, kept)
@@ -103,8 +88,8 @@ def _pick_items(self, _context):
 class SHIYUME_OT_BindPick(bpy.types.Operator):
     """手动指定这个物体该挂源里的哪一个数据块。
 
-    自动对号入座按物体名走, 源改过名、老模型跟不上的时候就对不上 —— 这时不该去改老模型迁就
-    匹配规则, 直接指就是了。指完物体名会跟着数据块对齐, 下次自动匹配就认得出。
+    没身份的物体按名字猜, 源改过名、老模型跟不上的时候就猜不中 —— 这时不该去改老模型迁就
+    匹配规则, 直接指就是了。指完身份就记在这个物体身上, 以后无论谁改名都照身份认。
     """
 
     bl_idname = "shiyume.common_bind_pick"
@@ -139,7 +124,7 @@ class SHIYUME_OT_BindPick(bpy.types.Operator):
         layout = self.layout
         layout.label(text=os.path.basename(self.filepath), icon='FILE_BLEND')
         layout.prop(self, "source_name")
-        layout.label(text="指完物体会改名成这个数据块的名字", icon='INFO')
+        layout.label(text="指完身份就记在这个物体上, 之后改名也不会丢", icon='INFO')
 
     def execute(self, context):
         if not self.source_name:
@@ -160,8 +145,9 @@ class SHIYUME_OT_BindPick(bpy.types.Operator):
 class SHIYUME_OT_CharBind(bpy.types.Operator):
     """选一个源文件, 把整个角色 (骨架 + 全部蒙皮网格) 的数据块一次挂上去。
 
-    按**物体名**对号入座; 源里没有的物体直接跳过, 不算错误。挂上去之后几何/拓扑就跟着源走了,
-    本地那份被源的版本取代; 形态键的值仍然是本文件自己的。
+    绑过的照物体身上记着的身份走, 没绑过的按**物体名**猜一次; 源里没有的物体直接跳过, 不算
+    错误。挂上去之后几何/拓扑就跟着源走了, 本地那份被源的版本取代; 形态键的值仍然是本文件
+    自己的 —— 同一个文件里两个模型认领同一件身体也照样各是各的值。
     """
 
     bl_idname = "shiyume.char_bind"
@@ -189,17 +175,13 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
             return {'CANCELLED'}
         candidates = bindable(character.members(context))
         try:
-            available = character.source_object_names(target)
-            pairs = [(obj, _match(obj.name, available)) for obj in candidates]
-            mapping = character.source_object_data_map(
-                target, [name for _obj, name in pairs if name is not None])
+            pairs = character.plan(candidates, target)
         except Exception as error:          # noqa: BLE001
             self.report({'ERROR'}, "读不出 %s: %s" % (os.path.basename(target), error))
             return {'CANCELLED'}
 
         bound, skipped, failed = [], [], []
-        for obj, source_object in pairs:
-            source_name = mapping.get(source_object) if source_object else None
+        for obj, source_name in pairs:
             if source_name is None:
                 skipped.append(obj.name)
                 continue
@@ -277,6 +259,7 @@ class SHIYUME_OT_CharUnbind(bpy.types.Operator):
             for key in (linkage.SOURCE_FILE_KEY, linkage.SOURCE_NAME_KEY):
                 if key in datablock.keys():
                     del datablock[key]
+            character.forget_binding(obj)
             freed.append(datablock.name)
         if not freed:
             self.report({'ERROR'}, "这个角色没有绑着源的数据块")

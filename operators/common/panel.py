@@ -67,10 +67,13 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
         self._draw_active(context, layout)
 
     def _draw_active(self, context, layout):
-        """当前这一个物体: 它挂着谁、手动改挂、材质跟不跟。
+        """当前这一个物体: 它记着的身份、挂着谁、材质跟不跟。
 
         这一段是**逐物体**的, 和上面按角色一次做完那一段分开 —— 源改过名、老模型对不上的时候
         要的正是逐个指, 而材质跟不跟源本来就是每个物体自己的事。
+
+        身份单独画一行而不是只画源: 名字可以跟数据块不一样 (两个模型认领同一件身体时必然如此),
+        那一行回答的是"下次自动绑定会把它认成谁", 光看名字答不出来。
         """
         obj = context.active_object
         if obj is None or obj.data is None or linkage.collection_of(obj.data) is None:
@@ -84,8 +87,12 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
         if reference is not None:
             box.label(text="→ %s / %s" % (os.path.basename(reference[0]), reference[1]),
                       icon='FILE_BLEND')
-            if obj.name != obj.data.name:
-                box.label(text="物体名和数据块名不一致, 重指一次会对齐", icon='ERROR')
+        binding = character.binding_of(obj)
+        if binding is None:
+            box.label(text="没记身份, 自动绑定时按名字猜", icon='QUESTION')
+        else:
+            box.label(text="身份: %s / %s" % (os.path.basename(binding[0]), binding[1]),
+                      icon='FUND')
         box.operator("shiyume.common_bind_pick", icon='EYEDROPPER')
         if obj.type == 'MESH':
             row = box.row()
@@ -110,6 +117,8 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
                 box.label(text="    ...还有 %d 份" % (len(rows) - 6))
             if not os.path.isfile(path):
                 box.label(text="    源文件不存在!", icon='ERROR')
+        for row in push.conflicts(groups):
+            box.label(text=row, icon='ERROR')
 
         selected = push.detached_of(context.selected_objects)
         if selected:
