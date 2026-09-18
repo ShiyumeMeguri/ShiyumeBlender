@@ -15,6 +15,11 @@
 
 这里只做一件事: 存完看一眼 `.blend1` 还在不在, 把结论回传。它还在就说明没人收 —— 那是
 RuriAutoSave 没装或没配备份根, 得让人知道, 而不是当作备份成功了。
+
+**存盘之前先核对, 对不上就炸, 绝不退而求其次。** 源是唯一真源, 一次静默的缺斤少两会顺着
+链接扩散到每一个子文件, 还要等下次打开才看得见。所以这里没有任何"尽力而为"的分支: 顶点数、
+带权重的顶点数、权重条数、顶点组名单, 有一项对不上就 fail 并且**不存盘**, 源文件一个字节
+都不动。材质槽在源里找不到名字同理 —— 接上去等于把源那几个槽清空, 也是炸。
 """
 
 import json
@@ -104,7 +109,8 @@ def apply_materials(mesh, names):
     关联被打断, 重新打开工作文件报 `LIB: Material: 'X' missing`。
 
     材质槽是源的资产, 推送本来就不该改它, 所以这里按名字接回源自己那几份就是正解。源里没有
-    的名字只能留空槽 —— 那是本文件自造、从没绑过源的材质, 必须报出来, 不能默默吞掉。
+    的名字**不留空槽** —— 留空就是把源那个槽的材质抹了。返回给 main 当场 fail, 在存盘之前,
+    所以这一次 clear/append 只发生在内存里, 源文件一个字节都没动。
     """
     missing = []
     mesh.materials.clear()
@@ -116,17 +122,39 @@ def apply_materials(mesh, names):
     return missing
 
 
-def apply_vertex_groups(objects, names):
-    """顶点组的**名字**住在物体上, 权重住在网格里, 两头必须同时换。
+def mesh_facts(mesh, users):
+    """一个网格身上"推送绝不许弄丢"的那几个数。两边用同一个函数量, 才比得出真差别。
 
-    只换网格会让权重接到旧的名字表上 —— 组的索引没变, 名字对不上, 表现是权重看着还在,
-    绑定却接错骨头。
+    顶点组是**网格域**的 (实测: 两个物体共用一个网格, 一边加组另一边立刻看得见), 所以组名
+    和权重都随网格一起走, 中转文件原样带得过去 —— 这里只负责核对, 不负责搬运。
     """
-    for obj in objects:
-        for group in list(obj.vertex_groups):
-            obj.vertex_groups.remove(group)
-        for name in names:
-            obj.vertex_groups.new(name=name)
+    return {
+        'vertices': len(mesh.vertices),
+        'weighted': sum(1 for vertex in mesh.vertices if vertex.groups),
+        'weights': sum(len(vertex.groups) for vertex in mesh.vertices),
+        'groups': [group.name for group in users[0].vertex_groups] if users else [],
+    }
+
+
+def verify(source_name, expected, actual):
+    """落进源里的必须和推上来的一模一样, 差一个数就当场炸, **不存盘**。
+
+    这里绝不"尽力而为": 源是唯一真源, 一次静默的缺斤少两会顺着链接扩散到每一个子文件, 而且
+    要等下次打开才看得见。宁可推送失败让人重来, 也不能存一份少了东西的源。
+    """
+    if expected is None:
+        return
+    bad = [key for key in ('vertices', 'weighted', 'weights', 'groups')
+           if expected.get(key) != actual.get(key)]
+    if not bad:
+        return
+    detail = "; ".join(
+        "%s 推上来 %r 落地却是 %r"
+        % (key,
+           len(expected[key]) if key == 'groups' else expected[key],
+           len(actual[key]) if key == 'groups' else actual[key])
+        for key in bad)
+    fail("%s 落进源里之后对不上, 已放弃写入 (源文件一个字节都没动): %s" % (source_name, detail))
 
 
 def main():
@@ -154,13 +182,15 @@ def main():
                  % (len(incoming_list), kind, len(rows)))
         for row, incoming in zip(rows, incoming_list):
             users = replace(kind, row['source_name'], incoming)
-            if row.get('vertex_groups') is not None:
-                apply_vertex_groups(users, row['vertex_groups'])
             if row.get('materials') is not None:
                 missing = apply_materials(incoming, row['materials'])
                 if missing:
-                    notes.append("%s 的材质槽在源里找不到, 留空了: %s"
-                                 % (row['source_name'], ", ".join(missing)))
+                    fail("%s 的材质槽在源里找不到 %s; 接上去会把源那几个槽清空, 已放弃写入 "
+                         "(源文件一个字节都没动)。先把这些材质推/建到源里再来"
+                         % (row['source_name'], ", ".join(missing)))
+            expected = row.get('expect')
+            if expected is not None:            # 只有网格有这几个数, 骨架/材质没有
+                verify(row['source_name'], expected, mesh_facts(incoming, users))
             lines.append("%s/%s" % (kind, row['source_name']))
 
     bpy.context.preferences.filepaths.save_version = REQUIRED_SAVE_VERSION

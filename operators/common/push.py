@@ -99,11 +99,29 @@ def _material_name(material):
     return reference[1] if reference is not None else material.name
 
 
+def mesh_facts(mesh, users):
+    """一个网格身上"推送绝不许弄丢"的那几个数。worker 那边有一份一模一样的实现, 两边量同样
+    的东西才比得出真差别 —— 它不能 import 这里 (跑在无插件的进程里), 所以只能各写一份。"""
+    return {
+        'vertices': len(mesh.vertices),
+        'weighted': sum(1 for vertex in mesh.vertices if vertex.groups),
+        'weights': sum(len(vertex.groups) for vertex in mesh.vertices),
+        'groups': [group.name for group in users[0].vertex_groups] if users else [],
+    }
+
+
 def _row(kind, datablock, source_name):
+    """告诉 worker "推的是哪一份", 外加**落地之后必须对得上的那几个数**。
+
+    这里给的是**核对用的期望值**, 不是"照着重建"的指令。顶点组是网格域的, 组名与权重随网格
+    一起进中转文件、原样落进源 —— 谁都不该去"重新接一遍"。曾经有过一版 `apply_vertex_groups`
+    按 Blender 2.9x 的旧语义(组名在物体上)把源的组全删了再按名字建空组, 结果是每推一次就
+    把源的蒙皮权重清空一次, 而组名看着完好, 所以一直没人发现。
+    """
     row = {'carrier_name': datablock.name, 'source_name': source_name}
     if kind == 'meshes':
         users = _objects_using(datablock)
-        row['vertex_groups'] = [group.name for group in users[0].vertex_groups] if users else []
+        row['expect'] = mesh_facts(datablock, users)
         row['materials'] = [_material_name(material) for material in datablock.materials]
     return row
 
