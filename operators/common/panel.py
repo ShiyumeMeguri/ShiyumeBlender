@@ -155,6 +155,7 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
             self._draw_sources(box, [rig] + meshes)
 
         column = layout.column(align=True)
+        column.operator("shiyume.pose_sync", icon='CON_TRANSFORM')
         column.operator("shiyume.char_bind", icon='LINKED')
         column.operator("shiyume.char_detach", icon='UNLINKED')
         column.operator("shiyume.char_unbind", icon='X')

@@ -19,6 +19,7 @@ import bpy
 from . import character
 from . import linkage
 from . import material_sync
+from . import pose_sync
 from . import push
 
 
@@ -304,6 +305,53 @@ class _Scoped(_Reporting):
         return push.detached_of(context.selected_objects)
 
 
+def pose_rigs(context):
+    """要同步姿势的骨架: 当前角色那一副, 加上另外选中的骨架。"""
+    rig, _meshes = character.active_character(context)
+    rigs = [rig] if rig is not None else []
+    for obj in context.selected_objects:
+        if obj.type == 'ARMATURE' and obj not in rigs:
+            rigs.append(obj)
+    return [obj for obj in rigs if character.binding_of(obj) is not None]
+
+
+class SHIYUME_OT_PoseSync(_Reporting, bpy.types.Operator):
+    """把源文件里那副骨架的控制网络 (约束 / 约束上的驱动器 / 开关属性) 搬到本地这一副上。
+
+    骨骼结构是数据块, 链接之后跟着源走; 但**姿势住在物体上**, 而物体永远是本地的 —— 链接
+    一个字都带不过来。源里新加的控制器不按这个键就永远到不了场景, 而场景里指着旧骨的约束
+    会在骨改名/消失的那一刻**退化成"拷贝目标物体的变换"**, 整副骨架被甩出几百米, 零报错。
+
+    跨角色互锁 (指向另一个角色物体的约束) 和场景自己长出来的机械骨上的约束原样保留 ——
+    源根本不知道它们存在, 也就无权删它们。开关属性只补缺不覆盖: `ik_on` 在场景里是 0,
+    照抄源里的 1 会让 IK 当场接管四肢。
+    """
+
+    bl_idname = "shiyume.pose_sync"
+    bl_label = "从源同步姿势 (约束/驱动器/开关)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(pose_rigs(context))
+
+    def execute(self, context):
+        lines, notes, failed = [], [], False
+        for rig in pose_rigs(context):
+            try:
+                summary, rig_notes, hard = pose_sync.sync(rig)
+            except Exception as exc:                  # noqa: BLE001 逐个隔离, 失败要报出来
+                return self._done({'ok': False, 'error': "%s: %s" % (rig.name, exc)})
+            lines.append(summary)
+            notes.extend("%s: %s" % (rig.name, note) for note in rig_notes)
+            failed = failed or hard
+        if not lines:
+            return self._done({'ok': False, 'error': "选中的东西里没有绑着源的骨架"})
+        return self._done({'ok': not failed, 'notes': notes,
+                           'error': "同步完成但有硬错, 见上面带 ★ 的几行",
+                           'summary': "; ".join(lines)})
+
+
 class SHIYUME_OT_Push(_Scoped, bpy.types.Operator):
     """把摘下来的共用数据推回唯一源, 并接回链接。
 
@@ -345,6 +393,7 @@ classes = (
     SHIYUME_OT_CharBind,
     SHIYUME_OT_CharDetach,
     SHIYUME_OT_CharUnbind,
+    SHIYUME_OT_PoseSync,
     SHIYUME_OT_Push,
     SHIYUME_OT_Discard,
 )
