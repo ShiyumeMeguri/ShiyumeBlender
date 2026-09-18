@@ -186,6 +186,19 @@ def reattach(datablock):
     return attach(datablock, path, source_name)
 
 
+def known_sources():
+    """这个文件已经在用的源文件路径, 按用的份数从多到少。
+
+    手动指定来源时拿它当默认值: 一个角色的零件几乎总是来自同一个源, 让人再翻一次文件选择器
+    是白费事。
+    """
+    counts = {}
+    for groups in (attached_datablocks(), detached_datablocks()):
+        for path, rows in groups.items():
+            counts[path] = counts.get(path, 0) + len(rows)
+    return [path for path, _count in sorted(counts.items(), key=lambda row: -row[1])]
+
+
 def detached_datablocks():
     """整个文件里所有摘下来待推送的数据块, 按源文件分组。"""
     groups = {}

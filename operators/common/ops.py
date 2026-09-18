@@ -17,6 +17,7 @@ import bpy
 
 from . import character
 from . import linkage
+from . import material_sync
 from . import push
 
 
@@ -60,6 +61,100 @@ def detachable(objects):
         if datablock is not None and linkage.is_attached(datablock) and datablock not in seen:
             seen.append(datablock)
     return seen
+
+
+def bind_one(obj, path, source_name):
+    """把一个物体的数据块挂到源里的某个数据块上, 并把名字与材质归属一并对齐。
+
+    自动对号入座和手动指定走同一条路 —— 名字对齐、材质开关的兑现只有这一份实现, 两边不可能
+    各飘。名字必须对齐: 物体名跟数据块一模一样, 下一次自动匹配才认得出它。
+    """
+    kept = material_sync.snapshot(obj)
+    linkage.attach(obj.data, path, source_name)
+    character.align_name(obj, obj.data)
+    material_sync.apply_to(obj)
+    material_sync.restore(obj, kept)
+
+
+_PICK_ITEMS = {}
+
+
+def _pick_items(self, _context):
+    """源文件里同类数据块的名录。
+
+    枚举回调返回的列表**必须自己留引用**, 否则 Blender 会拿到已经被回收的字符串, 当场崩。
+    这里也只读目录不加载任何东西: 回调是在画界面的时候跑的, 在那里动 bpy.data 是找死。
+    """
+    path = os.path.abspath(bpy.path.abspath(self.filepath)) if self.filepath else ""
+    key = (path, self.kind)
+    if key not in _PICK_ITEMS:
+        names = []
+        if path and self.kind:
+            try:
+                with bpy.data.libraries.load(path) as (source, _target):
+                    names = sorted(getattr(source, self.kind))
+            except Exception:               # noqa: BLE001 读不出就给空列表, 别让界面炸
+                names = []
+        _PICK_ITEMS[key] = ([(name, name, "") for name in names]
+                            or [("", "（这个文件里没有同类数据块）", "")])
+    return _PICK_ITEMS[key]
+
+
+class SHIYUME_OT_BindPick(bpy.types.Operator):
+    """手动指定这个物体该挂源里的哪一个数据块。
+
+    自动对号入座按物体名走, 源改过名、老模型跟不上的时候就对不上 —— 这时不该去改老模型迁就
+    匹配规则, 直接指就是了。指完物体名会跟着数据块对齐, 下次自动匹配就认得出。
+    """
+
+    bl_idname = "shiyume.common_bind_pick"
+    bl_label = "手动指定来源数据块"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: bpy.props.StringProperty(name="源文件", subtype='FILE_PATH')
+    kind: bpy.props.StringProperty(options={'HIDDEN'})
+    source_name: bpy.props.EnumProperty(name="来源数据块", items=_pick_items)
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj is not None and obj.data is not None
+                and linkage.collection_of(obj.data) is not None)
+
+    def invoke(self, context, event):
+        _PICK_ITEMS.clear()                 # 换过文件就得重新读目录
+        obj = context.active_object
+        self.kind = linkage.collection_of(obj.data)
+        if not self.filepath:
+            reference = linkage.source_reference(obj.data)
+            sources = [reference[0]] if reference else linkage.known_sources()
+            if sources:
+                self.filepath = sources[0]
+        if not self.filepath:
+            self.report({'ERROR'}, "这个文件还没有任何源; 先用「整个角色绑定到唯一源」选一次")
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text=os.path.basename(self.filepath), icon='FILE_BLEND')
+        layout.prop(self, "source_name")
+        layout.label(text="指完物体会改名成这个数据块的名字", icon='INFO')
+
+    def execute(self, context):
+        if not self.source_name:
+            self.report({'ERROR'}, "没有可指定的数据块")
+            return {'CANCELLED'}
+        obj = context.active_object
+        target = os.path.abspath(bpy.path.abspath(self.filepath))
+        try:
+            bind_one(obj, target, self.source_name)
+        except Exception as error:          # noqa: BLE001
+            self.report({'ERROR'}, "指不上去: %s" % error)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "%s -> %s / %s"
+                    % (obj.name, os.path.basename(target), self.source_name))
+        return {'FINISHED'}
 
 
 class SHIYUME_OT_CharBind(bpy.types.Operator):
@@ -109,7 +204,7 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
                 skipped.append(obj.name)
                 continue
             try:
-                linkage.attach(obj.data, target, source_name)
+                bind_one(obj, target, source_name)
             except Exception as error:      # noqa: BLE001 逐个隔离, 一个失败别拖累其它
                 failed.append("%s (%s)" % (obj.name, error))
                 continue
@@ -118,7 +213,7 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
         for row in failed:
             self.report({'WARNING'}, "绑不上: %s" % row)
         if skipped:
-            self.report({'INFO'}, "源里没有, 已跳过 %d 个: %s"
+            self.report({'WARNING'}, "对不上名字的 %d 个, 用「手动指定来源」逐个指: %s"
                         % (len(skipped), ", ".join(skipped[:6])))
         if not bound:
             self.report({'ERROR'}, "一个都没绑上")
@@ -263,6 +358,7 @@ class SHIYUME_OT_Discard(_Scoped, bpy.types.Operator):
 
 
 classes = (
+    SHIYUME_OT_BindPick,
     SHIYUME_OT_CharBind,
     SHIYUME_OT_CharDetach,
     SHIYUME_OT_CharUnbind,

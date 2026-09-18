@@ -9,6 +9,7 @@
 
 import bpy
 
+from . import material_sync
 from . import ops
 from . import panel
 from . import takeover
@@ -19,10 +20,12 @@ classes = ops.classes + takeover.classes + panel.classes
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    material_sync.register()
     takeover.register_keymap()
 
 
 def unregister():
     takeover.unregister_keymap()
+    material_sync.unregister()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

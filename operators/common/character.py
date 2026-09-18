@@ -61,6 +61,26 @@ def members(context):
     return [obj for obj in context.selected_objects if obj.data is not None]
 
 
+def align_name(obj, datablock):
+    """物体名跟着它的数据块走。
+
+    手动指定之后两边必须一模一样, 否则下一次自动对号入座又对不上 —— 那正是当初断链的成因:
+    源改了名, 老模型的物体名还留在原地, 按名字就再也认不出它该挂谁。
+
+    名字被别的物体占着时**报错**, 不替人改名: 那说明场景里有两个物体都认领同一件共用体, 该
+    先把重复处理掉。偷偷把别人改成 `X_旧` 看着像帮忙, 实际是在用户场景里动了他没让动的东西,
+    而且下次他找不到那个物体。
+    """
+    if obj.name == datablock.name:
+        return False
+    squatter = bpy.data.objects.get(datablock.name)
+    if squatter is not None and squatter is not obj:
+        raise RuntimeError("已经有一个物体叫 %r 了; 两个物体认领同一件共用数据, 先处理掉重复"
+                           % datablock.name)
+    obj.name = datablock.name
+    return True
+
+
 def source_object_names(path):
     """源文件里有哪些物体 —— 只读目录, 一个字节的数据都不加载。"""
     with bpy.data.libraries.load(path) as (source, _target):

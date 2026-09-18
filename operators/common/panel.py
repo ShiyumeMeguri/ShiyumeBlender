@@ -17,6 +17,7 @@ import bpy
 
 from . import character
 from . import linkage
+from . import material_sync
 from . import push
 
 STATE_TEXT = {
@@ -63,6 +64,34 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
         layout = self.layout
         self._draw_pending(context, layout)
         self._draw_character(context, layout)
+        self._draw_active(context, layout)
+
+    def _draw_active(self, context, layout):
+        """当前这一个物体: 它挂着谁、手动改挂、材质跟不跟。
+
+        这一段是**逐物体**的, 和上面按角色一次做完那一段分开 —— 源改过名、老模型对不上的时候
+        要的正是逐个指, 而材质跟不跟源本来就是每个物体自己的事。
+        """
+        obj = context.active_object
+        if obj is None or obj.data is None or linkage.collection_of(obj.data) is None:
+            return
+        layout.separator()
+        box = layout.box()
+        state = state_of(obj.data)
+        text, icon = STATE_TEXT[state]
+        box.label(text="%s: %s" % (obj.name, text), icon=icon)
+        reference = linkage.source_reference(obj.data)
+        if reference is not None:
+            box.label(text="→ %s / %s" % (os.path.basename(reference[0]), reference[1]),
+                      icon='FILE_BLEND')
+            if obj.name != obj.data.name:
+                box.label(text="物体名和数据块名不一致, 重指一次会对齐", icon='ERROR')
+        box.operator("shiyume.common_bind_pick", icon='EYEDROPPER')
+        if obj.type == 'MESH':
+            row = box.row()
+            row.prop(obj, material_sync.SYNC_PROPERTY)
+            if not material_sync.is_syncing(obj):
+                box.label(text="材质挂在物体上, 换源不跟着变", icon='INFO')
 
     def _draw_pending(self, context, layout):
         groups = linkage.detached_datablocks()
