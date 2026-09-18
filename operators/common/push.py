@@ -148,8 +148,8 @@ def _archive_source(path, notes):
         notes.append("RuriAutoSave 没装, %s 的上一版留在源旁边成了 .blend1"
                      % os.path.basename(path))
         return
-    if backup.configured_roots() is None:
-        notes.append("RuriAutoSave 没配备份根, %s 的上一版留在源旁边"
+    if not backup.is_enabled():
+        notes.append("RuriAutoSave 的备份关着, %s 的上一版留在源旁边"
                      % os.path.basename(path))
         return
     status, landed = backup.harvest(path)
