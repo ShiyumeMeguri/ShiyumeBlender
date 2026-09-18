@@ -5,10 +5,11 @@
 
 顺序:
 
-  1. 后台 Blender 写源。写之前把保存版本数钉成 1, 于是旧内容留成 `<源>.blend1`。那一下是
-     货真价实的保存, 后台那边的 RuriAutoSave 自己就会收走它 —— 但它读的是**存盘的**
-     userpref, 前台这个会话里刚改过还没存的备份设置它看不见。所以 worker 回报"收没收走",
-     没收走这边才按同一套规则补一次, 于是永远恰好收一次。
+  1. 后台 Blender 写源, 跑在 `--factory-startup` 下 —— 它只做"链数据块 → 换 → 存盘",
+     一个插件都用不上, 而加载整套插件是这一步的**全部**开销(实测 12.46s → 1.62s)。
+     写之前把保存版本数钉成 1, 于是旧内容留成 `<源>.blend1`。因为不加载插件, 那边的
+     RuriAutoSave 一定不在, 所以 `.blend1` 一定由**前台**按同一套规则收走 —— worker 照旧
+     回报"收没收走", 前台照着办, 于是永远恰好收一次, 而且不再依赖后台碰巧装了什么。
 
   2. **存盘, 重新打开本文件。** 源刚被外面改过, 而 Blender 不会自己去重读已经载入的库;
      不重读就用旧内容建覆盖, 存盘重开时 resync 对不上, 覆盖会被整个丢掉 —— 表现是几何回不
@@ -91,7 +92,11 @@ def _run_worker(blend, payload):
     handle, path = tempfile.mkstemp(suffix='.json', prefix='shiyume_payload_')
     with os.fdopen(handle, 'w', encoding='utf-8') as stream:
         json.dump(payload, stream, ensure_ascii=False)
-    command = [bpy.app.binary_path, '-b', blend, '--python', WORKER, '--', path]
+    # --factory-startup: worker 只做"链数据块 → 换 → 存盘", 一个插件都用不上, 而加载整套
+    # 插件是这一步的**全部**开销 —— 实测同一台机器同一个源文件: 带插件启动 11.23s、
+    # factory 0.49s; 开文件并存盘 12.46s vs 1.62s。快 7.7 倍, 而且省下的全是纯启动。
+    command = [bpy.app.binary_path, '-b', '--factory-startup', blend,
+               '--python', WORKER, '--', path]
     try:
         completed = subprocess.run(command, capture_output=True, text=True,
                                    encoding='utf-8', errors='replace')
