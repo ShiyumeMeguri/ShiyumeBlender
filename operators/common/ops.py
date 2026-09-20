@@ -72,8 +72,23 @@ def bind_one(obj, path, source_name):
     """
     linkage.bind(obj.data, path, source_name)
     character.remember_binding(obj, path, source_name)
-    character.align_name(obj, source_name)
+    character.align_names(obj, source_name)
     material_sync.apply_to(obj)
+
+
+def default_source(obj):
+    """这个物体该从哪个文件挑目标: 它已经认着的那个, 否则本文件用得最多的那个。"""
+    reference = linkage.source_reference(obj.data)
+    if reference is not None:
+        return reference[0]
+    sources = linkage.known_sources()
+    return sources[0] if sources else ""
+
+
+def source_names(path, kind):
+    """源文件里这一类数据块的名录 —— 只读目录, 一个字节的数据都不加载。"""
+    with bpy.data.libraries.load(path) as (source, _target):
+        return sorted(getattr(source, kind))
 
 
 _PICK_ITEMS = {}
@@ -155,6 +170,76 @@ class SHIYUME_OT_BindPick(bpy.types.Operator):
         self.report({'INFO'}, "%s -> %s / %s"
                     % (obj.name, os.path.basename(target), self.source_name))
         return {'FINISHED'}
+
+
+class SHIYUME_OT_BindTo(bpy.types.Operator):
+    """把这个物体的覆盖目标换成指定的那一个, 顺手把名字对齐过去。
+
+    属性全是纯字符串, 所以下拉菜单可以在画的那一刻就把三个值都填好。对话框那个用的是枚举
+    (它要当场列名录给人挑), 枚举值在 draw 里赋值要过一遍 items 回调校验 —— 菜单里一条一条
+    塞的场合不值得冒那个险, 两条路最后都落到同一个 bind_one 上。
+    """
+
+    bl_idname = "shiyume.common_bind_to"
+    bl_label = "换成这一个"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    filepath: bpy.props.StringProperty(options={'HIDDEN'})
+    kind: bpy.props.StringProperty(options={'HIDDEN'})
+    source_name: bpy.props.StringProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.data is None:
+            self.report({'ERROR'}, "没有选中物体")
+            return {'CANCELLED'}
+        try:
+            bind_one(obj, self.filepath, self.source_name)
+        except Exception as error:          # noqa: BLE001
+            self.report({'ERROR'}, "换不过去: %s" % error)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "%s -> %s / %s (几何没动, 要源那份就按拉取)"
+                    % (obj.name, os.path.basename(self.filepath), self.source_name))
+        return {'FINISHED'}
+
+
+class SHIYUME_MT_BindTarget(bpy.types.Menu):
+    """覆盖目标的下拉: 源文件里同类数据块一条一条列出来, 点一下就换过去。
+
+    菜单的 draw 只在**打开菜单那一下**跑, 不是每帧, 所以这里直接读源文件的目录就行 —— 既不
+    用缓存, 也就没有"源改过了菜单还是旧的"这种事。只读目录不碰 bpy.data, 画界面时动 bpy.data
+    是找死。
+    """
+
+    bl_idname = "SHIYUME_MT_BindTarget"
+    bl_label = "切换覆盖目标"
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.active_object
+        kind = linkage.collection_of(obj.data) if obj is not None and obj.data else None
+        path = default_source(obj) if obj is not None else ""
+        if not path or kind is None:
+            layout.label(text="这个文件还没有任何源", icon='INFO')
+            return
+        layout.label(text=os.path.basename(path), icon='FILE_BLEND')
+        try:
+            names = source_names(path, kind)
+        except Exception as error:          # noqa: BLE001 读不出就说读不出, 别让菜单炸
+            layout.label(text="读不出目录: %s" % error, icon='ERROR')
+            return
+        if not names:
+            layout.label(text="这个文件里没有同类数据块", icon='INFO')
+            return
+        reference = linkage.source_reference(obj.data)
+        current = reference[1] if reference is not None else None
+        for name in names:
+            entry = layout.operator(
+                "shiyume.common_bind_to", text=name,
+                icon='RADIOBUT_ON' if name == current else 'RADIOBUT_OFF')
+            entry.filepath = path
+            entry.kind = kind
+            entry.source_name = name
 
 
 class SHIYUME_OT_CharBind(bpy.types.Operator):
@@ -417,6 +502,8 @@ class SHIYUME_OT_Discard(_Scoped, bpy.types.Operator):
 
 classes = (
     SHIYUME_OT_BindPick,
+    SHIYUME_OT_BindTo,
+    SHIYUME_MT_BindTarget,
     SHIYUME_OT_CharBind,
     SHIYUME_OT_CharDetach,
     SHIYUME_OT_CharUnbind,

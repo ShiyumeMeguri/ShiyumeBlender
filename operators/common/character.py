@@ -20,6 +20,8 @@ import os
 
 import bpy
 
+from . import linkage
+
 
 def character_of(rig):
     """骨架 -> 蒙皮到它身上的网格物体。"""
@@ -106,23 +108,35 @@ def forget_binding(obj):
     return hit
 
 
-def align_name(obj, source_name):
-    """名字空着就跟**源里那个数据块**的名字对齐, 被别的物体占着就保持原样。
+def rename_to(target, wanted, collection):
+    """名字空着就改成 wanted, 被别人占着就保持原样。返回改没改。
 
     对齐只是让人看着顺眼, **不是身份** —— 身份在 remember_binding 记的那一对字符串上。所以
-    撞名不是错误, 也不去动占着名字的那个物体: 一个文件里两个模型共用同一件身体, 本来就只能
+    撞名不是错误, 也不去动占着名字的那一个: 一个文件里两个模型共用同一件身体, 本来就只能
     有一个叫得上那个名字。
-
-    对齐的依据是源里的名字而不是本地数据块的名字: 绑定不再替换数据, 本地那份仍然叫它自己
-    原来的名字, 拿它对齐等于什么都没对。
     """
-    if obj.name == source_name:
+    if target.name == wanted:
         return False
-    squatter = bpy.data.objects.get(source_name)
-    if squatter is not None and squatter is not obj:
+    squatter = collection.get(wanted)
+    if squatter is not None and squatter is not target:
         return False
-    obj.name = source_name
+    target.name = wanted
     return True
+
+
+def align_names(obj, source_name):
+    """把物体和它的数据块一起对到**源里那个数据块**的名字上。返回改了几个。
+
+    对齐的依据是源里的名字, 不是本地数据块的名字: 绑定不再替换数据, 本地那份仍然叫它自己
+    原来的名字, 拿它对齐等于什么都没对。
+
+    数据块也一起改, 因为换完目标之后文件里最容易看岔的就是"这块叫 A 的数据其实认着 B"。
+    """
+    changed = rename_to(obj, source_name, bpy.data.objects)
+    collection_name = linkage.collection_of(obj.data)
+    if collection_name is not None:
+        changed += rename_to(obj.data, source_name, getattr(bpy.data, collection_name))
+    return changed
 
 
 def source_object_names(path):

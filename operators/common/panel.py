@@ -96,7 +96,12 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
         else:
             box.label(text="身份: %s / %s" % (os.path.basename(binding[0]), binding[1]),
                       icon='FUND')
-        box.operator("shiyume.common_bind_pick", icon='EYEDROPPER')
+        # 同一个源里换目标是最常做的一件事, 给它一个一眼看得见当前值的下拉;
+        # 换**文件**才需要走下面那个带文件选择器的对话框。
+        box.menu("SHIYUME_MT_BindTarget",
+                 text="覆盖目标: %s" % (reference[1] if reference is not None else "未指定"),
+                 icon='DOWNARROW_HLT')
+        box.operator("shiyume.common_bind_pick", text="换个源文件", icon='EYEDROPPER')
         if obj.type == 'MESH':
             row = box.row()
             row.prop(obj, material_sync.SYNC_PROPERTY)
