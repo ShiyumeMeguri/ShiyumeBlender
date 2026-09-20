@@ -182,21 +182,35 @@ def attach(datablock, path, source_name):
     return override
 
 
-def detach(datablock):
-    """摘下来准备编辑: 先把源指针刻到数据块上, 再 make_local。
+def bind(datablock, path, source_name):
+    """认下源, 但**一个顶点都不碰**: 把源指针刻上去, 落定成"摘开待推送"。
 
-    顺序不能反。最后一个用户从链接数据块上挪走的那一刻, 库记录就被回收了, 事后再问
-    `library.filepath` 只会拿到 None —— 实测本地化之后 `len(bpy.data.libraries)` 直接归零。
+    绑定和拉取分开是**正确性要求**, 不是方便。重新指源多半发生在本地这份已经改过之后, 顺手
+    把源的版本换上来等于不打招呼地把人的改动清掉 —— 而且那是在 attach 里发生的, 连撤销点都
+    没有。所以这里只建立关系, 之后是推是拉由人自己按。
+
+    本来跟着别的源走 (覆盖态) 的先 make_local: 留住**眼下看到的那份**, 再指向新的源。
+    """
+    if datablock.library is not None:
+        raise RuntimeError("%r 是纯链接进来的, 本文件改不了它" % datablock)
+    local = datablock.make_local() if is_attached(datablock) else datablock
+    local[SOURCE_FILE_KEY] = absolute_path(path)
+    local[SOURCE_NAME_KEY] = source_name
+    return local
+
+
+def detach(datablock):
+    """摘下来准备编辑: 源指针照旧那一条, 只是从库记录挪到数据块自己身上。
+
+    顺序不能反 —— 必须**先问出源再 make_local**。最后一个用户从链接数据块上挪走的那一刻,
+    库记录就被回收了, 事后再问 `library.filepath` 只会拿到 None (实测本地化之后
+    `len(bpy.data.libraries)` 直接归零)。bind 里那次 make_local 发生在刻键之前也一样安全,
+    因为源是这里当参数传进去的, 不用回头问库。
     """
     reference = source_reference(datablock)
     if reference is None:
         raise RuntimeError("%r 问不出源文件, 不能脱开" % datablock)
-    path, source_name = reference
-
-    local = datablock.make_local()
-    local[SOURCE_FILE_KEY] = path
-    local[SOURCE_NAME_KEY] = source_name
-    return local
+    return bind(datablock, reference[0], reference[1])
 
 
 def reattach(datablock):

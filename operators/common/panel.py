@@ -4,7 +4,7 @@
 属性的即时查看, 用的时候不该再切标签页。
 
 顶上那条"待推送"是**文件级**的 —— 摘开的数据块是这个文件私有的岔路, 不收回去就不叫单一源,
-所以它必须在任何一个物体的面板上都看得见, 而不是只在摘开的那个物体上。推送与还原各给两档:
+所以它必须在任何一个物体的面板上都看得见, 而不是只在摘开的那个物体上。推送与拉取各给两档:
 手上选中的那几份, 和整个文件 —— 改完一件推一件和攒一批一起推都行, 没推的照旧摘着。
 
 下面那段是**角色级**的: 选中骨架或它任意一个子网格都一样, 绑定/摘下/解绑一次做完整副骨架
@@ -141,14 +141,14 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
             column.label(text="选中的 %d 份" % len(selected), icon='RESTRICT_SELECT_OFF')
             column.operator("shiyume.common_push", text="推送选中的",
                             icon='EXPORT').scope = 'SELECTED'
-            column.operator("shiyume.common_discard", text="还原选中的",
+            column.operator("shiyume.common_discard", text="拉取选中的",
                             icon='LOOP_BACK').scope = 'SELECTED'
 
         column = layout.column(align=True)
         column.label(text="整个文件 %d 份" % count, icon='FILE_BLEND')
         column.operator("shiyume.common_push", text="推送全部",
                         icon='EXPORT').scope = 'FILE'
-        column.operator("shiyume.common_discard", text="还原全部",
+        column.operator("shiyume.common_discard", text="拉取全部",
                         icon='LOOP_BACK').scope = 'FILE'
 
     def _draw_character(self, context, layout):

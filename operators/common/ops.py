@@ -8,8 +8,9 @@
 一次, 对不上的跳过 (场景里本来就有主模型没有的东西)。落到数据块上的是物体的 `data`: 网格、
 材质、骨架各自跟自己的源, 物体本身永远是本地的。
 
-没有"拉取"。数据块跟着源走, 打开文件就是源的最新状态; 唯一需要动手的时刻是"我要改它",
-那一下由 takeover 接管。
+跟着源走的数据块打开文件就是源的最新状态, 不用拉; 唯一需要动手的时刻是"我要改它", 那一下
+由 takeover 接管。**但绑定不动几何** —— 刚认下源、或者改坏了想要源那份时, 要自己按一下
+「拉取」。它是唯一会拿源的版本盖掉本地那份的动作, 只能由人主动发起, 绝不顺手替人按。
 """
 
 import os
@@ -24,16 +25,28 @@ from . import push
 
 
 def bindable(objects):
-    """这些物体里, 数据块还没绑过、可以绑的那些。"""
+    """这些物体里可以认源的那些 —— 已经跟着别的源走的也算。
+
+    跟着源走的也让绑, 因为"换个源"正是绑定最常用的场合; 绑定既然不再替换数据, 换源就只是
+    改一条指针, 眼下的模型原样留着。纯链接进来的不算: 本文件根本改不了它。
+    """
     found = []
     for obj in objects:
         datablock = obj.data
         if datablock is None or linkage.collection_of(datablock) is None:
             continue
-        if datablock.library is not None or linkage.is_attached(datablock):
+        if datablock.library is not None:
             continue
         found.append(obj)
     return found
+
+
+def already_bound_to(obj, path, source_name):
+    """它是不是已经正好认着这一个源 —— 是的话再绑一次纯属多余, 还会白白把它摘下来。"""
+    reference = linkage.source_reference(obj.data)
+    return (reference is not None
+            and linkage.absolute_path(reference[0]) == linkage.absolute_path(path)
+            and reference[1] == source_name)
 
 
 def detachable(objects):
@@ -47,19 +60,20 @@ def detachable(objects):
 
 
 def bind_one(obj, path, source_name):
-    """把一个物体的数据块挂到源里的某个数据块上, 并把身份、名字、材质归属一并落定。
+    """认下源, 把身份与源指针落定 —— **不动几何**。
+
+    绑完是"摘开待推送"那一态: 眼下的模型原样留着, 接下来是把它推上去、还是拉源的版本下来,
+    由人自己按。绑定顺手替换是不能接受的 —— 重新指源多半发生在本地已经改过之后, 那一下会
+    把人的改动清掉, 而且没有撤销点。
 
     自动对号入座和手动指定走同一条路 —— 身份、名字对齐、材质开关的兑现只有这一份实现, 两边
-    不可能各飘。
-
-    身份先记, 名字后对: 名字**对不上也没关系**, 记下来的那一对字符串才是下一次认人的依据。
+    不可能各飘。身份先记, 名字后对: 名字**对不上也没关系**, 记下来的那一对字符串才是下一次
+    认人的依据。
     """
-    kept = material_sync.snapshot(obj)
-    linkage.attach(obj.data, path, source_name)
+    linkage.bind(obj.data, path, source_name)
     character.remember_binding(obj, path, source_name)
-    character.align_name(obj, obj.data)
+    character.align_name(obj, source_name)
     material_sync.apply_to(obj)
-    material_sync.restore(obj, kept)
 
 
 _PICK_ITEMS = {}
@@ -147,8 +161,11 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
     """选一个源文件, 把整个角色 (骨架 + 全部蒙皮网格) 的数据块一次挂上去。
 
     绑过的照物体身上记着的身份走, 没绑过的按**物体名**猜一次; 源里没有的物体直接跳过, 不算
-    错误。挂上去之后几何/拓扑就跟着源走了, 本地那份被源的版本取代; 形态键的值仍然是本文件
-    自己的 —— 同一个文件里两个模型认领同一件身体也照样各是各的值。
+    错误。
+
+    **绑定不动几何**: 绑完是"摘开待推送"那一态, 眼下的模型原样留着。接下来把它推上去、
+    还是拉源的版本下来, 由人自己按 —— 换源多半发生在本地已经改过之后, 顺手替换会把
+    改动清掉且没有撤销点。已经正好认着这一个源的直接跳过, 再绑一次纯属多余。
     """
 
     bl_idname = "shiyume.char_bind"
@@ -181,10 +198,13 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
             self.report({'ERROR'}, "读不出 %s: %s" % (os.path.basename(target), error))
             return {'CANCELLED'}
 
-        bound, skipped, failed = [], [], []
+        bound, skipped, failed, kept = [], [], [], []
         for obj, source_name in pairs:
             if source_name is None:
                 skipped.append(obj.name)
+                continue
+            if already_bound_to(obj, target, source_name):
+                kept.append(obj.name)
                 continue
             try:
                 bind_one(obj, target, source_name)
@@ -198,11 +218,14 @@ class SHIYUME_OT_CharBind(bpy.types.Operator):
         if skipped:
             self.report({'WARNING'}, "对不上名字的 %d 个, 用「手动指定来源」逐个指: %s"
                         % (len(skipped), ", ".join(skipped[:6])))
-        if not bound:
+        if not bound and not kept:
             self.report({'ERROR'}, "一个都没绑上")
             return {'CANCELLED'}
-        self.report({'INFO'}, "%s: 绑上 %d 个 (跳过 %d)"
-                    % (os.path.basename(target), len(bound), len(skipped)))
+        if bound:
+            self.report({'WARNING'}, "几何没动: 绑定只认了源。要拿源的版本就按「拉取」, "
+                                     "要把眼下这份发上去就按「推送」")
+        self.report({'INFO'}, "%s: 绑上 %d 个 (原本就认着的 %d, 跳过 %d)"
+                    % (os.path.basename(target), len(bound), len(kept), len(skipped)))
         return {'FINISHED'}
 
 
@@ -287,7 +310,7 @@ SCOPE_ITEMS = (
 
 
 class _Scoped(_Reporting):
-    """范围是一个属性而不是两个算子: 推送/还原各自只有一套逻辑, 面板上画两次就够了。
+    """范围是一个属性而不是两个算子: 推送/拉取各自只有一套逻辑, 面板上画两次就够了。
 
     poll 只问"文件里有没有摘开的" —— 它是类方法, 拿不到实例上那个 scope, 想按范围判就只能
     把属性读成别人那一次点击留下的值。范围对不上由 execute 说人话, 不在按钮灰不灰上耍心机。
@@ -375,13 +398,17 @@ class SHIYUME_OT_Push(_Scoped, bpy.types.Operator):
 
 
 class SHIYUME_OT_Discard(_Scoped, bpy.types.Operator):
-    """丢掉本地改动, 把摘下来的数据块直接接回源 (改错了要放弃时用)。
+    """拉源的版本下来盖掉本地这份, 然后接回链接。
 
-    范围同推送: 可以只还原手上这一个网格, 不牵连别的。
+    两个场合是同一件事: 刚绑完想拿源的模型, 以及改坏了想放弃本地改动。两边的后果一模一样
+    —— 本地那份没了 —— 所以只该有一个按钮, 名字按人更常用的那个叫。
+
+    这是**唯一**会拿源覆盖本地的动作, 而且只能由人主动按: 绑定、换源都不会情不自禁地替你
+    按一下。范围同推送: 可以只拉手上这一个网格, 不牵连别的。
     """
 
     bl_idname = "shiyume.common_discard"
-    bl_label = "放弃本地改动并接回源"
+    bl_label = "拉取源的版本 (丢掉本地这份)"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):

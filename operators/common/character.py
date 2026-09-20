@@ -106,19 +106,22 @@ def forget_binding(obj):
     return hit
 
 
-def align_name(obj, datablock):
-    """名字空着就跟数据块对齐, 被别的物体占着就保持原样。
+def align_name(obj, source_name):
+    """名字空着就跟**源里那个数据块**的名字对齐, 被别的物体占着就保持原样。
 
     对齐只是让人看着顺眼, **不是身份** —— 身份在 remember_binding 记的那一对字符串上。所以
     撞名不是错误, 也不去动占着名字的那个物体: 一个文件里两个模型共用同一件身体, 本来就只能
     有一个叫得上那个名字。
+
+    对齐的依据是源里的名字而不是本地数据块的名字: 绑定不再替换数据, 本地那份仍然叫它自己
+    原来的名字, 拿它对齐等于什么都没对。
     """
-    if obj.name == datablock.name:
+    if obj.name == source_name:
         return False
-    squatter = bpy.data.objects.get(datablock.name)
+    squatter = bpy.data.objects.get(source_name)
     if squatter is not None and squatter is not obj:
         return False
-    obj.name = datablock.name
+    obj.name = source_name
     return True
 
 

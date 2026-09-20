@@ -88,7 +88,7 @@ def conflicts(groups):
 
 
 def self_referencing(datablocks):
-    """指着本文件自己的那些 —— 推/还原之前必须拦住。"""
+    """指着本文件自己的那些 —— 推送/拉取之前必须拦住。"""
     return [datablock.name for datablock in datablocks if linkage.self_referencing(datablock)]
 
 
@@ -96,7 +96,7 @@ def refuse_self_referencing(datablocks):
     """撞上自指就给一份说得清来龙去脉的拒绝; 没撞上返回 None。
 
     这不是"某种边缘情况", 是坏数据。推它等于让后台写完本文件、前台再存盘盖回去, 表现正是
-    "点了没反应"; 还原它等于把一个文件链接进它自己。两条都只能拦, 不能凑合着跑 —— 无声地
+    "点了没反应"; 拉取它等于把一个文件链接进它自己。两条都只能拦, 不能凑合着跑 —— 无声地
     空转一次比报错糟得多, 因为人会以为推成功了。
     """
     broken = self_referencing(datablocks)
