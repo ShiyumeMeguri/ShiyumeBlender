@@ -233,17 +233,24 @@ def _write_sources(groups, notes):
     return lines, None
 
 
-def _reattach(datablocks, notes):
-    """接回链接; 逐个隔离, 接不回去的点名说。返回 (成功数, 总数)。"""
+def _reattach(datablocks):
+    """接回链接; 逐个隔离, 接不回去的原样记下理由。返回 (成功数, 总数, 失败理由)。
+
+    逐个隔离是为了一个失败别拖累其它, **不是**为了把失败咽下去: 理由要原样带回给调用方去
+    报错。接不回链接就是没接回 —— 最常见的成因是源里根本没有那个名字 (改过名、或者当初
+    append 时被 Blender 加了 `.001` 后缀), 那条 KeyError 里连"源里现有哪些"都带着, 是人
+    唯一能据以动手的信息, 埋进一条看着像成功的汇总里等于没说。
+    """
     done = 0
+    failures = []
     for datablock in datablocks:
         name = datablock.name
         try:
             linkage.reattach(datablock)
             done += 1
         except Exception as error:          # noqa: BLE001
-            notes.append("%s 接不回链接: %s" % (name, error))
-    return done, len(datablocks)
+            failures.append("%s 接不回链接: %s" % (name, error))
+    return done, len(datablocks), failures
 
 
 def push(datablocks):
@@ -278,13 +285,19 @@ def push(datablocks):
                    for path, rows in linkage.detached_datablocks().items()
                    for kind, datablock, source_name in rows
                    if (path, kind, source_name) in wanted]
-    done, total = _reattach(coming_back, notes)
+    done, total, failures = _reattach(coming_back)
     bpy.ops.wm.save_mainfile()
 
     left = sum(len(rows) for rows in linkage.detached_datablocks().values())
     lines.append("接回 %d/%d" % (done, total))
     if left:
         notes.append("这个文件里还有 %d 份摘开的没推" % left)
+    if failures:
+        # 源已经写进去了, 但链接没接回来 —— 必须报错。这一半成功最容易被当成全成功:
+        # 内容确实上去了, 而本文件这边还摘着, 下次打开看着像"没推过"。
+        return {'ok': False, 'notes': notes, 'error': "\n".join(
+            ["源已经写好了, 但本文件这边的链接没接回来 %d/%d 份:" % (total - done, total)]
+            + failures)}
     return {'ok': True, 'notes': notes, 'summary': ' | '.join(line for line in lines if line)}
 
 
@@ -296,7 +309,11 @@ def discard(datablocks):
     refusal = refuse_self_referencing(datablocks)
     if refusal is not None:
         return refusal
-    notes = []
-    done, total = _reattach(
-        [datablock for rows in groups.values() for _kind, datablock, _name in rows], notes)
-    return {'ok': True, 'notes': notes, 'summary': "已丢弃本地改动并接回 %d/%d 份" % (done, total)}
+    done, total, failures = _reattach(
+        [datablock for rows in groups.values() for _kind, datablock, _name in rows])
+    if failures:
+        # 一份都没拉到也曾经报"已完成 0/1 份" —— 看着像绿的, 于是只剩"点了没反应"。
+        # 拉不到就是没拉到, 理由原样端出来。
+        return {'ok': False, 'error': "\n".join(
+            ["拉不下来 %d/%d 份 (本地这份原样没动):" % (total - done, total)] + failures)}
+    return {'ok': True, 'summary': "已拉取源的版本, 接回 %d/%d 份" % (done, total)}
