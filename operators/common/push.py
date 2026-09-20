@@ -87,6 +87,30 @@ def conflicts(groups):
     return found
 
 
+def self_referencing(datablocks):
+    """指着本文件自己的那些 —— 推/还原之前必须拦住。"""
+    return [datablock.name for datablock in datablocks if linkage.self_referencing(datablock)]
+
+
+def refuse_self_referencing(datablocks):
+    """撞上自指就给一份说得清来龙去脉的拒绝; 没撞上返回 None。
+
+    这不是"某种边缘情况", 是坏数据。推它等于让后台写完本文件、前台再存盘盖回去, 表现正是
+    "点了没反应"; 还原它等于把一个文件链接进它自己。两条都只能拦, 不能凑合着跑 —— 无声地
+    空转一次比报错糟得多, 因为人会以为推成功了。
+    """
+    broken = self_referencing(datablocks)
+    if not broken:
+        return None
+    return {'ok': False, 'error': "\n".join((
+        "%s 身上记着的源就是本文件自己, 这是坏数据, 不是一种状态。" % broken[0],
+        "成因: 别的文件把从本文件摘走的数据块推了回来, 把那条源指针一并带了进来。",
+        "照它推等于后台写完本文件、前台再盖回去 —— 正是「点了没反应」。",
+        "先用「手动指定来源」把它重新指到真正的源上, 或者「解除绑定」让它变回本文件自己的数据。",
+        "涉及: %s" % ", ".join(broken),
+    ))}
+
+
 def _objects_using(datablock):
     return [obj for obj in bpy.data.objects if obj.data is datablock]
 
@@ -189,7 +213,14 @@ def _write_sources(groups, notes):
             kinds.setdefault(kind, []).append(_row(kind, datablock, source_name))
         carrier = _write_carrier(datablock for _kind, datablock, _name in rows)
         try:
-            result = _run_worker(path, {'carrier': carrier, 'kinds': kinds})
+            # 源指针那两个键的名字只在 linkage 里声明一处, 这里当数据传给 worker ——
+            # worker 跑在无插件进程里 import 不到它, 但也绝不该自己认识这些名字。
+            result = _run_worker(path, {
+                'carrier': carrier,
+                'kinds': kinds,
+                'binding_keys': {'file': linkage.SOURCE_FILE_KEY,
+                                 'name': linkage.SOURCE_NAME_KEY},
+            })
         finally:
             if os.path.exists(carrier):
                 os.remove(carrier)
@@ -223,6 +254,9 @@ def push(datablocks):
     work = bpy.data.filepath
     if not work:
         return {'ok': False, 'error': '本文件还没存过盘; 推送之后要重新读它, 先存一次'}
+    refusal = refuse_self_referencing(datablocks)
+    if refusal is not None:
+        return refusal
     clash = conflicts(groups)
     if clash:
         return {'ok': False,
@@ -259,6 +293,9 @@ def discard(datablocks):
     groups = _grouped(datablocks)
     if not groups:
         return {'ok': False, 'error': '点到名的东西里没有摘下来的共用数据'}
+    refusal = refuse_self_referencing(datablocks)
+    if refusal is not None:
+        return refusal
     notes = []
     done, total = _reattach(
         [datablock for rows in groups.values() for _kind, datablock, _name in rows], notes)

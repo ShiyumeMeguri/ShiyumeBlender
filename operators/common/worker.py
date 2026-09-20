@@ -74,7 +74,7 @@ def apply_shape_values(datablock, values):
             block.value = value
 
 
-def replace(kind, source_name, incoming):
+def replace(kind, source_name, incoming, keys):
     """源里那份让位给推上来的这份: 先把用户接过去, 再删旧的, 最后把名字让出来。
 
     顺序不能换。旧的还在的时候改名会让新的拿到 `.001`, 而名字正是下一次推送回查的依据。
@@ -94,11 +94,50 @@ def replace(kind, source_name, incoming):
 
     users = [obj for obj in bpy.data.objects if obj.data is existing]
     kept = shape_values(existing)
+    rebind(existing, incoming, keys)
     existing.user_remap(incoming)
     collection.remove(existing)
     incoming.name = source_name
     apply_shape_values(incoming, kept)
     return users
+
+
+def binding_of(datablock, keys):
+    """这个数据块自己认哪个文件当源 -> (绝对路径, 源里的名字) 或 None。
+
+    覆盖态问库记录, 摘开态问它自己那两个键, 本地自造的两样都没有 —— 那就是链条的顶端。
+    """
+    override = getattr(datablock, "override_library", None)
+    reference = getattr(override, "reference", None)
+    if reference is not None and reference.library is not None:
+        return (os.path.abspath(bpy.path.abspath(reference.library.filepath)), reference.name)
+    path = datablock.get(keys['file'])
+    name = datablock.get(keys['name'])
+    return (path, name) if path and name else None
+
+
+def rebind(existing, incoming, keys):
+    """落地的那份继承**目标自己**认的源, 而不是发送方认的。必须在删掉 existing 之前调。
+
+    源指针刻在数据块的自定义属性上 (本地化之后那是唯一还问得出源的地方), 而自定义属性会
+    跟着数据块进中转文件、被原样 append 进来。照搬就有两个连环的坑:
+
+      1. A 从 B 摘走再推回 B, B 自己的数据块就继承了一条"我的源是 B" —— 自指。表现是 B 的
+         推送从此静默空转: 目标源就是本文件, 后台刚写完盘、前台一存又盖回去。
+      2. 就算把键清空也只对了一半: B 本来是 C 的覆盖, 整份换掉之后那条"B 属于 C"的归属没人
+         接手, B 变成一块无主的本地数据, 于是**再也推不到 C**。
+
+    正解是两条合一: 换之前先问 existing "你认谁当源", 换之后把那条答案刻到 incoming 上。
+    于是 B 收到 A 的内容后仍然认 C, 状态是"摘开待推送到 C" —— 正是人想要的下一步。链条顶端
+    的 C 自己没有源, 于是什么都不刻, 干干净净。
+    """
+    inherited = binding_of(existing, keys)
+    for key in keys.values():
+        if key in incoming.keys():
+            del incoming[key]
+    if inherited is not None:
+        incoming[keys['file']], incoming[keys['name']] = inherited
+    return inherited
 
 
 def apply_materials(mesh, names):
@@ -181,7 +220,7 @@ def main():
             fail("中转文件里取回 %d 个 %s, 请求的是 %d 个"
                  % (len(incoming_list), kind, len(rows)))
         for row, incoming in zip(rows, incoming_list):
-            users = replace(kind, row['source_name'], incoming)
+            users = replace(kind, row['source_name'], incoming, payload['binding_keys'])
             if row.get('materials') is not None:
                 missing = apply_materials(incoming, row['materials'])
                 if missing:

@@ -25,12 +25,15 @@ STATE_TEXT = {
     'detached': ("已摘下, 待推送", 'UNLINKED'),
     'linked': ("纯链接, 只读", 'LIBRARY_DATA_DIRECT'),
     'free': ("本文件自己的", 'BLANK1'),
+    'self': ("坏数据: 源指着本文件自己", 'ERROR'),
 }
 
 
 def state_of(datablock):
     if datablock is None or linkage.collection_of(datablock) is None:
         return None
+    if linkage.self_referencing(datablock):
+        return 'self'                       # 先于 detached 判: 它也有源指针, 但那条指针是坏的
     if linkage.is_attached(datablock):
         return 'attached'
     if linkage.is_detached(datablock):
@@ -120,6 +123,18 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
         for row in push.conflicts(groups):
             box.label(text=row, icon='ERROR')
 
+        # 自指的那几份必须在按钮上方就喊出来 —— 它们让推送静默空转,
+        # 不说的话人只会看到"点了没反应"。
+        broken = push.self_referencing(
+            [datablock for rows in groups.values() for _kind, datablock, _name in rows])
+        if broken:
+            box.label(text="%d 份的源指着本文件自己, 推不动也还不了" % len(broken),
+                      icon='ERROR')
+            for row in broken[:6]:
+                box.label(text="    %s" % row, icon='DOT')
+            box.label(text="    用「手动指定来源」重新指到真正的源, 或「解除绑定」",
+                      icon='BLANK1')
+
         selected = push.detached_of(context.selected_objects)
         if selected:
             column = layout.column(align=True)
@@ -148,7 +163,7 @@ class SHIYUME_PT_CommonDatablocks(bpy.types.Panel):
             box.label(text="角色 %s" % rig.name, icon='OUTLINER_OB_ARMATURE')
             box.label(text="骨架 1 + 子网格 %d" % len(meshes), icon='MESH_DATA')
             counts = tally([rig] + meshes)
-            for state in ('attached', 'detached', 'linked', 'free'):
+            for state in ('attached', 'detached', 'linked', 'free', 'self'):
                 if state in counts:
                     text, icon = STATE_TEXT[state]
                     box.label(text="%s: %d" % (text, counts[state]), icon=icon)

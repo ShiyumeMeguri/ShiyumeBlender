@@ -82,6 +82,24 @@ def absolute_path(path):
     return os.path.abspath(bpy.path.abspath(path))
 
 
+def self_referencing(datablock):
+    """这个数据块说它的源就是它自己住的这个文件 —— **永远是坏数据**, 不是一种可用状态。
+
+    成因只有一个: 别的文件把从本文件摘走的数据块推了回来, 而摘走时刻在它身上的"我来自本
+    文件"那两个键跟着中转文件一路进了源。worker 现在落地前会把这两个键清掉, 所以新的推送
+    不会再长出这种东西; 已经长出来的必须当场喊出来。
+
+    不喊的话它会静默吃掉推送: 目标源就是本文件, 于是后台刚把盘写完、前台一存就盖回去,
+    点多少次都"没反应"; 还原同样废, 因为那等于把一个文件链接进它自己。
+    """
+    if not bpy.data.filepath:
+        return False
+    reference = source_reference(datablock)
+    if reference is None:
+        return False
+    return os.path.normcase(reference[0]) == os.path.normcase(absolute_path(bpy.data.filepath))
+
+
 def shape_values(datablock):
     """形态键的值: 恢复覆盖会把它冲回源里的值, 所以每次迁移前后都要自己接一手。"""
     keys = getattr(datablock, "shape_keys", None)
@@ -137,6 +155,12 @@ def attach(datablock, path, source_name):
 
     返回覆盖出来的那一份。形态键的值按调用前的原样接回去 —— 覆盖是从源上重建的, 不接
     就会掉回源里的值。
+
+    链接一个**形态键上带驱动器**的网格, Blender 会把驱动器指着的那个物体一并拖进来 (驱动器
+    的目标是 Object + bone_target, 没有别的写法), 那个物体身上的约束再拖一批 —— 实测挂
+    Genesis8Male.001 会多出 `Avatar_Male [源]` 和 `Penis Curve [源]` 两个链接物体。它们零
+    用户、不在任何集合里, 删了下次开文件还会被覆盖重建, 所以**不删**: 按名字查物体拿到的
+    恒是本地那一份 (实测 `objects.get` / `objects[]` 都不会命中链接的), 它们是惰性的。
     """
     collection_name = collection_of(datablock)
     if collection_name is None:
