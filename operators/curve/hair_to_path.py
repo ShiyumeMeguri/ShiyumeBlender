@@ -462,6 +462,87 @@ def ring_correspondence(row, next_row):
     return mapping
 
 
+def ring_marks(rings):
+    marks = set()
+    for ring in rings:
+        marks.update(ring)
+    return marks
+
+
+def cap_layers(marks, end_ring):
+    seen = set(marks)
+    frontier = []
+    for vertex in ordered(end_ring):
+        for edge in ordered(vertex.link_edges):
+            other = edge.other_vert(vertex)
+            if other not in seen:
+                seen.add(other)
+                frontier.append(other)
+    layers = []
+    while frontier:
+        layers.append(ordered(frontier))
+        following = []
+        for vertex in frontier:
+            for edge in ordered(vertex.link_edges):
+                other = edge.other_vert(vertex)
+                if other not in seen:
+                    seen.add(other)
+                    following.append(other)
+        frontier = following
+    return layers
+
+
+def layer_order(layer):
+    members = set(layer)
+    links = {}
+    for vertex in layer:
+        links[vertex] = [edge.other_vert(vertex)
+                         for edge in ordered(vertex.link_edges)
+                         if edge.other_vert(vertex) in members]
+    order = [min(layer, key=lambda vertex: (len(links[vertex]), vertex.index))]
+    seen = set(order)
+    while True:
+        following = None
+        for other in links[order[-1]]:
+            if other not in seen:
+                following = other
+                break
+        if following is None:
+            break
+        order.append(following)
+        seen.add(following)
+    return order if len(order) == len(layer) else ordered(layer)
+
+
+def nearest_vertex(layer, point):
+    return min(layer, key=lambda vertex: ((vertex.co - point).length_squared,
+                                          vertex.index))
+
+
+def layer_arc(layer, front_point, back_point):
+    if len(layer) < 2:
+        return [layer[0], layer[0]]
+    order = layer_order(layer)
+    place = {vertex: index for index, vertex in enumerate(order)}
+    front = nearest_vertex(order, front_point)
+    back = nearest_vertex(order, back_point)
+    if front is back:
+        return [front, front]
+    return cycle_run(order, place, front, back)
+
+
+def cap_arcs(layers, anchor):
+    arcs = []
+    front = anchor[0].co.copy()
+    back = anchor[-1].co.copy()
+    for layer in layers:
+        arc = layer_arc(layer, front, back)
+        arcs.append(arc)
+        front = arc[0].co.copy()
+        back = arc[-1].co.copy()
+    return arcs
+
+
 def closed_ribbons(rows, matrix):
     rings = [row[:-1] for row in rows]
     if len(rings[0]) < 3:
@@ -477,11 +558,17 @@ def closed_ribbons(rows, matrix):
     place = {vertex: index for index, vertex in enumerate(seed)}
     starts = [cycle_run(seed, place, seed[left_index], seed[right_index]),
              cycle_run(seed, place, seed[right_index], seed[left_index])]
+    marks = ring_marks(rings)
+    head_layers = cap_layers(marks, rings[0])
+    tail_layers = cap_layers(marks, rings[-1])
     ribbons = []
     for start in starts:
         arc_rows = [start]
         for mapping in correspondences:
             arc_rows.append([mapping[vertex] for vertex in arc_rows[-1]])
+        opening = list(reversed(cap_arcs(head_layers, arc_rows[0])))
+        closing = cap_arcs(tail_layers, arc_rows[-1])
+        arc_rows = opening + arc_rows + closing
         ladder = [[matrix @ vertex.co for vertex in arc] for arc in arc_rows]
         ribbons.append((
             [path[0] for path in ladder], [path[-1] for path in ladder], ladder))
@@ -1655,6 +1742,10 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
     截面按每片壳拆成开放样条，所以生成的拓扑和原始面片同构。
     控制点的位置 / Radius / Tilt 由实测 NURBS 基函数最小二乘反解得到，
     保证求值出来的曲线本身贴合原网格，而不是让控制多边形贴合。
+    发尖顶点被焊成一个点（或收成一圈更小的环再收成一个点）的封闭管状发片，
+    尖端那几层不构成能被行检测认出来的边链，所以要从端环往外按边逐层剥出来，
+    每一层折成一条横截面接到梯子两端，焊死的那一点就是零宽度的末端截面 ——
+    少了这一步曲线会停在最后一个完整环上，丢掉一整节到发尖的控制点。
     控制点按发片两条边缘的实测偏差自动增删，不需要手调角度阈值：
     先按边缘偏差抽稀，再反复实测扫出来的边缘与原边缘的双向距离并在最差的
     区段补点，直到进入容差或补点不再改善，所以越弯越扭的地方控制点越密。
