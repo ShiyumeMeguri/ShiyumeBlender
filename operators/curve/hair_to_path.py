@@ -1614,11 +1614,10 @@ def merge_curve_objects(members, name):
     return bpy.data.objects.new(name, curve)
 
 
-def release_curve_object(obj):
-    data = obj.data
-    bpy.data.objects.remove(obj, do_unlink=True)
-    if data is not None and not data.users:
-        bpy.data.curves.remove(data)
+def relink_object(obj, source_collection, target_collection):
+    target_collection.objects.link(obj)
+    if obj.name in source_collection.objects:
+        source_collection.objects.unlink(obj)
 
 
 def create_leftover_object(name, shells):
@@ -1659,7 +1658,10 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
     控制点按发片两条边缘的实测偏差自动增删，不需要手调角度阈值：
     先按边缘偏差抽稀，再反复实测扫出来的边缘与原边缘的双向距离并在最差的
     区段补点，直到进入容差或补点不再改善，所以越弯越扭的地方控制点越密。
-    多分支头发不支持，会原样导出到 HairToPath_NeedManualSplit 供手动拆分。"""
+    多分支头发不支持，会原样导出到 HairToPath_NeedManualSplit 供手动拆分。
+    全程不删除任何数据：合并前的单根发丝曲线搬到 HairToPath_MergedStrands，
+    截面提不出来的发丝搬到 HairToPath_FailedStrands，反解用的取景探针留在
+    HairToPath_Profiles，这三个集合都排除在视图层之外，随时可以翻出来。"""
     bl_idname = "shiyume.hair_to_path"
     bl_label = "头发转路径曲线"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1724,9 +1726,11 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         curve_collection = ensure_collection(scene, "HairToPath_Curves")
         profile_collection = ensure_collection(scene, "HairToPath_Profiles")
         leftover_collection = ensure_collection(scene, "HairToPath_NeedManualSplit")
+        merged_collection = ensure_collection(scene, "HairToPath_MergedStrands")
+        failed_collection = ensure_collection(scene, "HairToPath_FailedStrands")
 
         probe = create_probe_object("HairToPath_FrameProbe")
-        scene.collection.objects.link(probe)
+        profile_collection.objects.link(probe)
         depsgraph = context.evaluated_depsgraph_get()
 
         built = 0
@@ -1734,64 +1738,48 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
         residuals = []
         shared = []
         grouped = {}
-        try:
-            for source in sources:
-                strands, rejected, leftover = collect_strands(source, self.split_branches)
-                skipped += len(rejected)
-                if leftover and self.export_unconverted:
-                    unconverted = create_leftover_object(source.name + "_Unconverted", leftover)
-                    leftover_collection.objects.link(unconverted)
-                for order, strand in enumerate(strands):
-                    label = "%s_S%02d" % (source.name, order)
-                    placeholder = create_profile_object(
-                        label + "_ProfileTemp",
-                        [[(-0.5, 0.0), (0.0, -0.1), (0.5, 0.0)],
-                         [(0.5, 0.0), (0.0, 0.1), (-0.5, 0.0)]])
-                    scene.collection.objects.link(placeholder)
-                    curve_object = create_path_curve(
-                        label + "_Curve", placeholder, self.resolution)
-                    curve_collection.objects.link(curve_object)
-                    residual, readings = fit_control_points(
-                        curve_object, strand, probe, depsgraph,
-                        strand.mean_width * self.control_tolerance, self.resolution)
-                    residuals.append(residual)
-                    polylines = strand_profile(
-                        strand, frames_for_strand(strand, readings),
-                        self.profile_corner_angle)
-                    if polylines is None:
-                        bpy.data.objects.remove(placeholder)
-                        bpy.data.objects.remove(curve_object)
-                        skipped += 1
-                        continue
-                    if self.solid_section:
-                        outline = solid_outline(polylines)
-                        if outline is None:
-                            bpy.data.objects.remove(placeholder)
-                            bpy.data.objects.remove(curve_object)
-                            skipped += 1
-                            continue
-                        polylines = outline
-                    samples = profile_envelope(polylines)
-                    profile_object = None
-                    for stored, existing in shared:
-                        if profile_difference(stored, samples) <= self.profile_similarity:
-                            profile_object = existing
-                            break
-                    if profile_object is None:
-                        profile_object = create_profile_object(
-                            "HairToPath_Profile_%02d" % len(shared), polylines)
-                        profile_collection.objects.link(profile_object)
-                        shared.append((samples, profile_object))
-                    curve_object.data.bevel_object = profile_object
-                    curve_object.parent = profile_object
-                    curve_object.matrix_parent_inverse =                         profile_object.matrix_world.inverted()
-                    for material in source.data.materials:
-                        curve_object.data.materials.append(material)
-                    grouped.setdefault(profile_object.name, []).append(curve_object)
-                    bpy.data.objects.remove(placeholder)
-                    built += 1
-        finally:
-            bpy.data.objects.remove(probe)
+        for source in sources:
+            strands, rejected, leftover = collect_strands(source, self.split_branches)
+            skipped += len(rejected)
+            if leftover and self.export_unconverted:
+                unconverted = create_leftover_object(source.name + "_Unconverted", leftover)
+                leftover_collection.objects.link(unconverted)
+            for order, strand in enumerate(strands):
+                label = "%s_S%02d" % (source.name, order)
+                curve_object = create_path_curve(label + "_Curve", probe, self.resolution)
+                curve_collection.objects.link(curve_object)
+                residual, readings = fit_control_points(
+                    curve_object, strand, probe, depsgraph,
+                    strand.mean_width * self.control_tolerance, self.resolution)
+                residuals.append(residual)
+                polylines = strand_profile(
+                    strand, frames_for_strand(strand, readings),
+                    self.profile_corner_angle)
+                if polylines is not None and self.solid_section:
+                    polylines = solid_outline(polylines)
+                if polylines is None:
+                    curve_object.data.bevel_object = None
+                    relink_object(curve_object, curve_collection, failed_collection)
+                    skipped += 1
+                    continue
+                samples = profile_envelope(polylines)
+                profile_object = None
+                for stored, existing in shared:
+                    if profile_difference(stored, samples) <= self.profile_similarity:
+                        profile_object = existing
+                        break
+                if profile_object is None:
+                    profile_object = create_profile_object(
+                        "HairToPath_Profile_%02d" % len(shared), polylines)
+                    profile_collection.objects.link(profile_object)
+                    shared.append((samples, profile_object))
+                curve_object.data.bevel_object = profile_object
+                curve_object.parent = profile_object
+                curve_object.matrix_parent_inverse =                     profile_object.matrix_world.inverted()
+                for material in source.data.materials:
+                    curve_object.data.materials.append(material)
+                grouped.setdefault(profile_object.name, []).append(curve_object)
+                built += 1
 
         merged = 0
         if self.merge_shared_curves:
@@ -1805,15 +1793,17 @@ class SHIYUME_OT_HairToPath(bpy.types.Operator):
                 whole.parent = profile_object
                 whole.matrix_parent_inverse = profile_object.matrix_world.inverted()
                 for member in members:
-                    release_curve_object(member)
+                    relink_object(member, curve_collection, merged_collection)
                 merged += len(members) - 1
         depsgraph.update()
         exclude_collection(context.view_layer, profile_collection)
+        exclude_collection(context.view_layer, merged_collection)
+        exclude_collection(context.view_layer, failed_collection)
         ranked = sorted(residuals)
         median = ranked[len(ranked) // 2] if ranked else 0.0
         worst = ranked[-1] if ranked else 0.0
         self.report({'INFO'}, "生成 %d 根发丝合并为 %d 条曲线，%d 个截面，跳过 %d 片，"
-                    "Tilt 残差 中位 %.1f 度 / 最大 %.1f 度" % (
+                    "Tilt 残差 中位 %.1f 度 / 最大 %.1f 度，未删除任何物体" % (
                         built, built - merged, len(shared), skipped,
                         math.degrees(median), math.degrees(worst)))
         return {'FINISHED'} if built else {'CANCELLED'}
