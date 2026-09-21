@@ -64,8 +64,6 @@ class SHIYUME_MT_Main(bpy.types.Menu):
         elif mode == "EDIT_CURVE":
             layout.label(text="曲线工具")
             layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
-            layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
-            layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
 
 
 class SHIYUME_MT_UV(bpy.types.Menu):
@@ -323,8 +321,6 @@ class SHIYUME_PT_Curve(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
-        layout.operator("shiyume.curve_to_mesh", icon="MESH_DATA")
-        layout.operator("shiyume.mesh_to_curve", icon="CURVE_PATH")
         layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
 
 
