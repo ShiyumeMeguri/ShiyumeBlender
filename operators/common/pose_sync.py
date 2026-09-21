@@ -7,7 +7,10 @@
 实测这条缝有多深: 源里新加的骨链接进来了, 本地那三条指着旧机械骨的 `Retarget offset` 却
 还在, subtarget 落空之后 `COPY_TRANSFORMS` **不是失效而是退化成"拷贝目标物体的变换"**,
 每一级再叠一遍物体世界矩阵 (Root 2 倍 / Center 3 倍 / Pelvis 4 倍), 整副骨架被甩到 550 m
-外。全程零报错。所以这里补上源 -> 本地的姿势同步, 并且带四道闸门。
+外。全程零报错。所以这里补上源 -> 本地的姿势同步, 并且带五道闸门。
+
+形态键驱动器走的是同一条缝: 它跟着网格覆盖进来, `target.id` 却还钉在库文件里那个物体上,
+读到的恒为 0, 于是形态键纹丝不动。`repoint_shape_keys` 每次同步都把它掰回本地骨架。
 
 **不搬**只对这个场景成立的东西:
   · 指向别的骨架物体的约束 —— 跨角色互锁, 源文件里那个物体根本不存在
@@ -69,8 +72,8 @@ def _constraint_row(constraint):
     return row
 
 
-def _bone_of_path(data_path):
-    """pose.bones["X"].constraints["Y"].influence -> X"""
+def _quoted_name(data_path):
+    """pose.bones["X"].constraints["Y"].influence -> X; key_blocks["X"].value -> X"""
     try:
         return data_path.split('"')[1]
     except IndexError:
@@ -203,6 +206,61 @@ def _revive(rig):
     return revived
 
 
+def _shape_key_curves(rig):
+    """蒙皮在这副骨架上、并且带形态键驱动器的本地网格。"""
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH' or obj.library is not None:
+            continue
+        if not any(modifier.type == 'ARMATURE' and modifier.object is rig
+                   for modifier in obj.modifiers):
+            continue
+        keys = obj.data.shape_keys
+        if keys is None or keys.library is not None or keys.animation_data is None:
+            continue
+        for curve in list(keys.animation_data.drivers):
+            yield obj, keys, curve
+
+
+def repoint_shape_keys(rig):
+    """把形态键驱动器的目标从**库里**那个物体改指到本文件的这一副骨架。
+
+    形态键是跟着网格覆盖一起进来的, 它身上驱动器的 `target.id` 仍然钉在库文件里的物体上。
+    那个物体永远停在源文件的静止姿态, 驱动器读到的恒为 0 —— 形态键纹丝不动, 网格毫无形变,
+    而 `is_valid` 一直是 True, 界面上完全看不出来。每次重建网格覆盖都会再来一遍, 所以这件事
+    必须长在同步链路里, 不能靠记得手动跑一趟脚本 (实测: 8 条里漏掉最后一条 `Shake b`,
+    在基准文件里量一切正常, 只有在场景里才不动)。
+
+    目标**整个丢空**是同一件事的另一种形态: 在 Blender 里重建一次形态键数据块 (重新雕、
+    重新导入), 驱动器会留下来但 `target.id` 变成 None, 于是 `var` 恒读 0。同样是
+    `is_valid` 为 True、界面看不出来。这种按 `bone_target` 认领: 这根骨在这副骨架上就接上。
+
+    返回 (改指了几条, 解不开的清单)。解不开的不在这里删 —— 那是源文件里就该清掉的垃圾。
+    """
+    repointed, dead = 0, []
+    for obj, keys, curve in _shape_key_curves(rig):
+        name = _quoted_name(curve.data_path)
+        for variable in curve.driver.variables:
+            for target in variable.targets:
+                holder = target.id
+                if holder is not None and holder.library is not None:
+                    local = _local_object(holder.name, rig, rig.name)
+                    if local is not None:
+                        target.id = local
+                        holder = local
+                        repointed += 1
+                elif holder is None and getattr(target, "bone_target", "") in rig.pose.bones:
+                    target.id = rig
+                    holder = rig
+                    repointed += 1
+                bone = getattr(target, "bone_target", "")
+                if bone and (holder is None or holder.type != 'ARMATURE'
+                             or bone not in holder.pose.bones):
+                    dead.append("%s/%s -> %s" % (obj.name, name, bone))
+    if repointed:
+        rig.update_tag()
+    return repointed, dead
+
+
 def audit(rig):
     """四道闸门里的三道: 死约束 / 空靶 / 动作引用了骨架没有的骨。"""
     bones = set(rig.data.bones.keys())
@@ -223,7 +281,7 @@ def audit(rig):
     for curve in (action.fcurves if action else []):
         if not curve.data_path.startswith("pose.bones["):
             continue
-        bone = _bone_of_path(curve.data_path)
+        bone = _quoted_name(curve.data_path)
         if bone is not None and bone not in bones:
             missing_channels.add(bone)
     return dead, orphan, sorted(missing_channels)
@@ -277,6 +335,7 @@ def apply(rig, snap):
         rig[key] = value
         added.append(key)
     revived = _revive(rig)
+    repointed, dead_keys = repoint_shape_keys(rig)
     bpy.context.view_layer.update()
 
     dead, orphan, missing = audit(rig)
@@ -287,6 +346,11 @@ def apply(rig, snap):
         notes.append("新增开关 %s" % ", ".join(added))
     if revived:
         notes.append("冲掉 %d 条约束身上的过期失效标记" % revived)
+    if repointed:
+        notes.append("把 %d 条形态键驱动器从库里的物体改指到本地骨架" % repointed)
+    if dead_keys:
+        notes.append("★%d 条形态键驱动器的骨不存在, 这些形态键既不被驱动也没法手调: %s"
+                     % (len(dead_keys), ", ".join(dead_keys[:4])))
     if dead:
         notes.append("★%d 条约束指向不存在的骨: %s" % (len(dead), ", ".join(dead[:4])))
     if orphan:
