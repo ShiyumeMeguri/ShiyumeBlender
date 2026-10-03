@@ -8,6 +8,7 @@ from . import select_avg_size_half
 from . import vg_smooth_merge
 from . import match_weights_active
 from . import pair_weights
+from . import lossless_mirror
 
 classes = (
     aabb_select.SHIYUME_OT_AABBSelect,
@@ -20,6 +21,7 @@ classes = (
     match_weights_active.SHIYUME_OT_MatchWeightsActive,
     pair_weights.SHIYUME_OT_SwapVertexWeights,
     pair_weights.SHIYUME_OT_CopyVertexWeights,
+    lossless_mirror.SHIYUME_OT_LosslessMirror,
 )
 
 

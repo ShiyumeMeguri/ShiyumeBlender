@@ -47,6 +47,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
 
         elif mode in {"EDIT_MESH", "EDIT"}:
             layout.label(text="网格工具")
+            layout.operator("shiyume.lossless_mirror", icon="MOD_MIRROR")
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
@@ -162,6 +163,7 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
         col = layout.column(align=True)
         col.label(text="拓扑/剪切")
         col.operator("shiyume.topology_cut", icon="MESH_GRID")
+        col.operator("shiyume.lossless_mirror", icon="MOD_MIRROR")
 
         col = layout.column(align=True)
         col.label(text="顶点组/权重")
