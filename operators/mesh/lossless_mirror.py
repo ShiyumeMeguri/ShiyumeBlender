@@ -7,10 +7,12 @@
 
 焊接不看距离, 看删除前的拓扑。镜像面上的顶点:
 - 两侧的面都在用(中缝连着), 或者一个面都没用: 留下, 与自己的镜像副本焊成一个;
-- 只有保留侧的面在用(中缝本来就断开, 比如 UV 接缝把中线拆成两列): 留下, 不焊;
+- 只有保留侧的面在用: 另一侧有东西时说明中缝本来就断开(比如 UV 接缝把中线拆成两列),
+  留下不焊; 另一侧本来是空的(只有半个网格)就焊上;
 - 只有另一侧的面在用: 它属于另一侧, 删掉。
 副本与原顶点在镜像面上逐位重合, 焊接不移动任何位置; 镜像后的顶点数因此动手前就能
-算出来, 与原来不同直接拒绝, 网格不动。
+算出来。另一侧有东西时, 它与原来不同就直接拒绝, 网格不动; 另一侧本来是空的就是补出
+另一半, 顶点数照算出来的增加。
 
 切空间自定义法线按平滑扇编码, 基准边取扇里面序最靠前的那个角 —— 删半边、合并、焊接
 都会改面序, 原样搬过来的编码在中缝会解出别的方向, 这就是"合并后法线错乱"。目标法线
@@ -143,7 +145,8 @@ class SeamPlan:
             corner_vertices, weights=face_other[corner_faces], minlength=vertex_count) > 0
         on_plane = side == 0
         self.delete = (side == -1) | (on_plane & used_by_other & ~used_by_kept)
-        weld = on_plane & (used_by_kept == used_by_other)
+        self.other_side_empty = not self.delete.any()
+        weld = on_plane & ~self.delete & (self.other_side_empty | (used_by_kept == used_by_other))
         self.kept_index = numpy.cumsum(~self.delete) - 1
         self.kept_vertex_count = int(numpy.count_nonzero(~self.delete))
         self.weld_vertices = self.kept_index[weld]
@@ -344,7 +347,7 @@ def restore_tangent_normals(mesh, original_normals, crossing, axis_index):
 def mirror_mesh(context, mesh, axis_index):
     plan = SeamPlan(mesh, axis_index)
     vertex_count, edge_count, face_count = len(mesh.vertices), len(mesh.edges), len(mesh.polygons)
-    if plan.mirrored_vertex_count != vertex_count:
+    if not plan.other_side_empty and plan.mirrored_vertex_count != vertex_count:
         raise MirrorRefusal(
             f"镜像后会有 {plan.mirrored_vertex_count} 个顶点, 原来 {vertex_count} 个"
             f"(差 {plan.mirrored_vertex_count - vertex_count:+d}): 两侧拓扑不对称, 未作改动")
@@ -352,7 +355,8 @@ def mirror_mesh(context, mesh, axis_index):
     tangent = custom is not None and custom.data_type == 'INT16_2D'
     original_normals = read_values(mesh.corner_normals, "vector", numpy.float32, 3) if tangent else None
     write_attribute(mesh, SOURCE_CORNER, 'CORNER', numpy.arange(len(mesh.loops)))
-    delete_other_side(mesh, plan)
+    if not plan.other_side_empty:
+        delete_other_side(mesh, plan)
     kept_face_count = len(mesh.polygons)
     join_mirrored_copy(context, mesh, axis_index)
     settle_mirrored_half(mesh, plan.kept_vertex_count, kept_face_count, axis_index)
@@ -365,13 +369,18 @@ def mirror_mesh(context, mesh, axis_index):
     for name in TRACKING_ATTRIBUTES:
         mesh.attributes.remove(mesh.attributes[name])
     side = ("+" if plan.kept_sign > 0 else "-") + "XYZ"[axis_index]
-    summary = f"保留 {side} 侧镜像完成: 中缝焊回 {len(plan.weld_vertices)} 个顶点, 顶点数 {vertex_count} 不变"
+    edge_change, face_change = len(mesh.edges) - edge_count, len(mesh.polygons) - face_count
+    if plan.other_side_empty:
+        counts = (f"另一侧原本是空的, 补出另一半: 顶点 {vertex_count} → {len(mesh.vertices)}, "
+                  f"边 {edge_count} → {len(mesh.edges)}, 面 {face_count} → {len(mesh.polygons)}")
+    elif edge_change or face_change:
+        counts = f"顶点数 {vertex_count} 不变, 边 {edge_change:+d} 面 {face_change:+d}(两侧连线原本不对称)"
+    else:
+        counts = f"顶点数 {vertex_count} 不变"
+    summary = f"保留 {side} 侧镜像完成: 中缝焊回 {len(plan.weld_vertices)} 个顶点, {counts}"
     if summary_errors is not None and summary_errors.size:
         summary += (f"; 中缝 {summary_errors.size} 个法线角与删除前最大偏差 {summary_errors.max():.1e}"
                     f"(逐位一致 {numpy.count_nonzero(summary_errors == 0)} 个)")
-    edge_change, face_change = len(mesh.edges) - edge_count, len(mesh.polygons) - face_count
-    if edge_change or face_change:
-        summary += f"; 边 {edge_change:+d} 面 {face_change:+d}(两侧连线原本不对称)"
     return summary
 
 
@@ -379,7 +388,8 @@ class SHIYUME_OT_LosslessMirror(bpy.types.Operator):
     """无损镜像(保留选中侧)：编辑模式下，按选中顶点在镜像轴的哪一侧决定保留哪半，
     删掉另一半，复制保留的一半并沿镜像轴取反(形态键一起，左右成对的顶点组与形态键对调)，
     合并回来后只把中缝上原本连着两侧的顶点与它自己的镜像副本焊回，中缝的自定义法线还原成
-    删除前的样子。镜像后顶点数与原来不同就直接拒绝，网格不动"""
+    删除前的样子。另一侧有东西时，镜像后顶点数与原来不同就直接拒绝，网格不动；
+    只有半个网格时直接补出另一半，中缝全部焊上"""
     bl_idname = "shiyume.lossless_mirror"
     bl_label = "无损镜像(保留选中侧)"
     bl_options = {'REGISTER', 'UNDO'}
