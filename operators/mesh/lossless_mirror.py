@@ -5,14 +5,13 @@
 原网格, 合并按名字对接顶点组与形态键。两个物体都放在单位变换下合并, 镜像那一半的坐标
 逐位取反(物体级负缩放经合并换算会带进浮点误差)。
 
-焊接不看距离, 看删除前的拓扑。镜像面上的顶点:
-- 两侧的面都在用(中缝连着), 或者一个面都没用: 留下, 与自己的镜像副本焊成一个;
-- 只有保留侧的面在用: 另一侧有东西时说明中缝本来就断开(比如 UV 接缝把中线拆成两列),
-  留下不焊; 另一侧本来是空的(只有半个网格)就焊上;
-- 只有另一侧的面在用: 它属于另一侧, 删掉。
-副本与原顶点在镜像面上逐位重合, 焊接不移动任何位置; 镜像后的顶点数因此动手前就能
-算出来。另一侧有东西时, 它与原来不同就直接拒绝, 网格不动; 另一侧本来是空的就是补出
-另一半, 顶点数照算出来的增加。
+焊接不看距离, 只看是不是恰好落在镜像面上: 镜像面上只有另一侧的面在用的顶点属于另一侧,
+删掉; 其余镜像面上的顶点一律与自己的镜像副本焊成一个(中缝本来断开的, 比如 UV 接缝把
+中线拆成两列, 也就此并上)。副本与原顶点在镜像面上逐位重合, 焊接不移动任何位置;
+离镜像面再近的顶点也不在镜像面上, 不会被焊。
+
+阀门: 另一侧有东西时, 镜像面以外两侧的顶点数必须相同, 否则两侧拓扑不对称, 动手前直接
+拒绝, 网格不动; 另一侧本来是空的(只有半个网格)就是补出另一半。
 
 切空间自定义法线按平滑扇编码, 基准边取扇里面序最靠前的那个角 —— 删半边、合并、焊接
 都会改面序, 原样搬过来的编码在中缝会解出别的方向, 这就是"合并后法线错乱"。目标法线
@@ -121,7 +120,7 @@ def select_faces(mesh, faces, corner_vertices, corner_faces):
 
 
 class SeamPlan:
-    """删除前按拓扑定好: 哪些顶点删, 镜像面上哪些顶点与自己的副本焊回, 镜像后有多少顶点。"""
+    """删除前定好: 哪些顶点删, 镜像面上哪些顶点与自己的副本焊回, 镜像面以外两侧各有多少顶点。"""
 
     def __init__(self, mesh, axis_index):
         coordinates = read_values(mesh.vertices, "co", numpy.float32, 3)[:, axis_index]
@@ -146,11 +145,11 @@ class SeamPlan:
         on_plane = side == 0
         self.delete = (side == -1) | (on_plane & used_by_other & ~used_by_kept)
         self.other_side_empty = not self.delete.any()
-        weld = on_plane & ~self.delete & (self.other_side_empty | (used_by_kept == used_by_other))
+        self.kept_off_plane = int(numpy.count_nonzero(side == 1))
+        self.other_off_plane = int(numpy.count_nonzero(side == -1))
         self.kept_index = numpy.cumsum(~self.delete) - 1
         self.kept_vertex_count = int(numpy.count_nonzero(~self.delete))
-        self.weld_vertices = self.kept_index[weld]
-        self.mirrored_vertex_count = 2 * self.kept_vertex_count - len(self.weld_vertices)
+        self.weld_vertices = self.kept_index[on_plane & ~self.delete]
 
 
 def delete_other_side(mesh, plan):
@@ -347,10 +346,10 @@ def restore_tangent_normals(mesh, original_normals, crossing, axis_index):
 def mirror_mesh(context, mesh, axis_index):
     plan = SeamPlan(mesh, axis_index)
     vertex_count, edge_count, face_count = len(mesh.vertices), len(mesh.edges), len(mesh.polygons)
-    if not plan.other_side_empty and plan.mirrored_vertex_count != vertex_count:
+    if not plan.other_side_empty and plan.kept_off_plane != plan.other_off_plane:
         raise MirrorRefusal(
-            f"镜像后会有 {plan.mirrored_vertex_count} 个顶点, 原来 {vertex_count} 个"
-            f"(差 {plan.mirrored_vertex_count - vertex_count:+d}): 两侧拓扑不对称, 未作改动")
+            f"镜像面以外保留侧 {plan.kept_off_plane} 个顶点, 另一侧 {plan.other_off_plane} 个"
+            f"(差 {plan.other_off_plane - plan.kept_off_plane:+d}): 两侧拓扑不对称, 未作改动")
     custom = mesh.attributes.get(CUSTOM_NORMAL)
     tangent = custom is not None and custom.data_type == 'INT16_2D'
     original_normals = read_values(mesh.corner_normals, "vector", numpy.float32, 3) if tangent else None
@@ -369,14 +368,19 @@ def mirror_mesh(context, mesh, axis_index):
     for name in TRACKING_ATTRIBUTES:
         mesh.attributes.remove(mesh.attributes[name])
     side = ("+" if plan.kept_sign > 0 else "-") + "XYZ"[axis_index]
-    edge_change, face_change = len(mesh.edges) - edge_count, len(mesh.polygons) - face_count
-    if plan.other_side_empty:
-        counts = (f"另一侧原本是空的, 补出另一半: 顶点 {vertex_count} → {len(mesh.vertices)}, "
-                  f"边 {edge_count} → {len(mesh.edges)}, 面 {face_count} → {len(mesh.polygons)}")
-    elif edge_change or face_change:
-        counts = f"顶点数 {vertex_count} 不变, 边 {edge_change:+d} 面 {face_change:+d}(两侧连线原本不对称)"
-    else:
+    final_vertex_count = len(mesh.vertices)
+    if (final_vertex_count, len(mesh.edges), len(mesh.polygons)) == (vertex_count, edge_count, face_count):
         counts = f"顶点数 {vertex_count} 不变"
+    else:
+        if plan.other_side_empty:
+            reason = "另一侧原本是空的, 补出了另一半"
+        elif final_vertex_count != vertex_count:
+            reason = f"中线原本断开, 并上了 {vertex_count - final_vertex_count} 个顶点"
+        else:
+            reason = "两侧连线原本不对称"
+        vertices = (f"顶点数 {vertex_count} 不变" if final_vertex_count == vertex_count
+                    else f"顶点 {vertex_count} → {final_vertex_count}")
+        counts = f"{vertices}, 边 {edge_count} → {len(mesh.edges)}, 面 {face_count} → {len(mesh.polygons)}({reason})"
     summary = f"保留 {side} 侧镜像完成: 中缝焊回 {len(plan.weld_vertices)} 个顶点, {counts}"
     if summary_errors is not None and summary_errors.size:
         summary += (f"; 中缝 {summary_errors.size} 个法线角与删除前最大偏差 {summary_errors.max():.1e}"
@@ -387,9 +391,9 @@ def mirror_mesh(context, mesh, axis_index):
 class SHIYUME_OT_LosslessMirror(bpy.types.Operator):
     """无损镜像(保留选中侧)：编辑模式下，按选中顶点在镜像轴的哪一侧决定保留哪半，
     删掉另一半，复制保留的一半并沿镜像轴取反(形态键一起，左右成对的顶点组与形态键对调)，
-    合并回来后只把中缝上原本连着两侧的顶点与它自己的镜像副本焊回，中缝的自定义法线还原成
-    删除前的样子。另一侧有东西时，镜像后顶点数与原来不同就直接拒绝，网格不动；
-    只有半个网格时直接补出另一半，中缝全部焊上"""
+    合并回来后把镜像面上的顶点与它自己的镜像副本焊回(中线原本断开的也并上)，中缝的自定义
+    法线还原成删除前的样子。另一侧有东西时，镜像面以外两侧顶点数不同就直接拒绝，网格不动；
+    只有半个网格时直接补出另一半"""
     bl_idname = "shiyume.lossless_mirror"
     bl_label = "无损镜像(保留选中侧)"
     bl_options = {'REGISTER', 'UNDO'}
