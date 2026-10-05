@@ -253,7 +253,7 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
             ("V", "V", "沿 V 轴等距下刀（横向切线）"),
             ("BOTH", "U + V", "两个方向都切"),
         ],
-        default="U",
+        default="V",
     )
     interval: bpy.props.FloatProperty(
         name="间隔",
