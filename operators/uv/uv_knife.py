@@ -28,8 +28,8 @@ class Crossing:
         self.factor = factor
 
 
-def cut_faces(bm, uv_layer, faces, polylines, tolerance):
-    """沿 polylines 切割 faces，返回切完之后的面集合。"""
+def cut_faces(bm, uv_layer, faces, polylines, tolerance, cut_edges):
+    """沿 polylines 切割 faces，返回切完之后的面集合；刀口边记进 cut_edges。"""
     work_faces = set(faces)
     for polyline in polylines:
         if len(polyline) < 2:
@@ -46,7 +46,7 @@ def cut_faces(bm, uv_layer, faces, polylines, tolerance):
             cut = _find_first_cut(face, uv_layer, polyline, tolerance)
             if cut is None:
                 continue
-            produced = _apply_cut(uv_layer, face, cut)
+            produced = _apply_cut(uv_layer, face, cut, cut_edges)
             if produced is None:
                 continue
             work_faces.update(produced)
@@ -312,7 +312,7 @@ def _resolve_pair(first, second):
     return near_vert, far_vert
 
 
-def _apply_cut(uv_layer, face, cut):
+def _apply_cut(uv_layer, face, cut, cut_edges):
     first, second, bends = cut
     loops = list(face.loops)
     points = [loop[uv_layer].uv.copy() for loop in loops]
@@ -323,10 +323,11 @@ def _apply_cut(uv_layer, face, cut):
         return None
 
     boundary_verts = set(face.verts)
-    new_face, _new_loop = bmesh.utils.face_split(
+    new_face, new_loop = bmesh.utils.face_split(
         face, first_vert, second_vert, coords=positions)
     if new_face is None:
         return None
+    cut_edges.add(new_loop.edge)
 
     if bends:
         created = (set(face.verts) | set(new_face.verts)) - boundary_verts

@@ -9,43 +9,10 @@ from mathutils import Vector
 
 from . import uv_islands
 from .uv_knife import cut_faces, distance_to_segment
+from .uv_level_cut import cut_by_grid, uv_continuous
 
 
-AXIS_INDEX = {"U": 0, "V": 1}
 AXIS_SETS = {"U": ("U",), "V": ("V",), "BOTH": ("U", "V")}
-
-
-# ---------------------------------------------------------------------------
-# 刀路：等距网格
-# ---------------------------------------------------------------------------
-
-
-def _axis_line(axis_index, position, bounds, margin):
-    other_index = 1 - axis_index
-    start = Vector((0.0, 0.0))
-    end = Vector((0.0, 0.0))
-    start[axis_index] = position
-    end[axis_index] = position
-    start[other_index] = bounds[other_index] - margin
-    end[other_index] = bounds[other_index + 2] + margin
-    return [start, end]
-
-
-def grid_polylines(bounds, axes, interval, align_to_island, tolerance):
-    margin = max(bounds[2] - bounds[0], bounds[3] - bounds[1]) * 0.5 + interval
-    polylines = []
-    for axis in axes:
-        axis_index = AXIS_INDEX[axis]
-        low = bounds[axis_index]
-        high = bounds[axis_index + 2]
-        origin = low if align_to_island else 0.0
-        position = math.ceil((low - origin) / interval) * interval + origin
-        if position - low <= tolerance:
-            position += interval
-        while position < high - tolerance:
-            polylines.append(_axis_line(axis_index, position, bounds, margin))
-            position += interval
-    return polylines
 
 
 # ---------------------------------------------------------------------------
@@ -175,22 +142,6 @@ def reference_polylines(reference_faces, reference_uv_layer,
 # ---------------------------------------------------------------------------
 
 
-def _uv_continuous(edge, uv_layer, tolerance):
-    loops = list(edge.link_loops)
-    if len(loops) != 2:
-        return False
-    first, second = loops
-    first_uvs = {
-        first.vert: first[uv_layer].uv,
-        first.link_loop_next.vert: first.link_loop_next[uv_layer].uv,
-    }
-    for loop in (second, second.link_loop_next):
-        matching = first_uvs.get(loop.vert)
-        if matching is None or (matching - loop[uv_layer].uv).length > tolerance:
-            return False
-    return True
-
-
 def _point_on_pattern(point, segments, tolerance):
     for start, end in segments:
         if distance_to_segment(point, start, end) <= tolerance:
@@ -207,7 +158,8 @@ def _nearest_segment_direction(point, segments):
     return direction.normalized()
 
 
-def dissolve_replaced_edges(bm, uv_layer, faces, polylines, parallel_angle, tolerance):
+def dissolve_replaced_edges(bm, uv_layer, faces, polylines, parallel_angle, tolerance,
+                            protected_edges):
     segments = [(polyline[index], polyline[index + 1])
                 for polyline in polylines
                 for index in range(len(polyline) - 1)]
@@ -225,11 +177,13 @@ def dissolve_replaced_edges(bm, uv_layer, faces, polylines, parallel_angle, tole
             if edge in seen:
                 continue
             seen.add(edge)
+            if edge in protected_edges:
+                continue
             if edge.seam or len(edge.link_faces) != 2:
                 continue
             if not all(linked in face_set for linked in edge.link_faces):
                 continue
-            if not _uv_continuous(edge, uv_layer, tolerance):
+            if not uv_continuous(edge, uv_layer, tolerance):
                 continue
 
             start = loop[uv_layer].uv.copy()
@@ -271,10 +225,11 @@ class EditMesh:
 
 CutSide = namedtuple("CutSide", ("mesh", "selected_faces", "island_faces"))
 
-
 class SHIYUME_OT_UVCut(bpy.types.Operator):
     """在 UV 编辑器里直接切割网格。刀路写在 UV 平面上，新顶点的三维位置由所在面插值得到。
-    等距网格：把选中孤岛按固定间隔切成等宽条带，并溶解掉被替换的旧布线。
+    等距网格：经共享顶点连通的孤岛合成一片壳，壳上只有一个标量场（参考孤岛取自己的 UV，
+    相邻孤岛以共享顶点为边界延拓），整片壳按这个场的等值线等距下刀，并溶解掉被替换的旧布线。
+    正反两面在共享边上落同一个点，环边处处闭合。
     参考布线：照另一份形状一致的 UV 的布线下刀，等价于按 UV 重拓扑。
     编辑模式里有两个网格时按物体配对，活动物体被切、另一个当参考；
     只有一个网格时在它内部按孤岛配对，活动面所在的孤岛被切。"""
@@ -310,7 +265,7 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
     )
     align_to_island: bpy.props.BoolProperty(
         name="对齐到孤岛",
-        description="勾选则每个孤岛从自己的边界起算，不勾选则对齐到 UV 原点的全局网格",
+        description="勾选则每片壳从自己的边界起算，不勾选则对齐到 UV 原点的全局网格",
         default=False,
     )
     fit_bounds: bpy.props.BoolProperty(
@@ -379,42 +334,22 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
             edit_meshes.append(EditMesh(mesh_object, bm, uv_layer))
         return edit_meshes
 
-    def _cut_and_dissolve(self, edit_mesh, work_faces, polylines):
-        before = len(edit_mesh.bm.faces)
-        faces = cut_faces(edit_mesh.bm, edit_mesh.uv_layer, work_faces,
-                          polylines, self.tolerance)
-        added = len(edit_mesh.bm.faces) - before
-        uv_islands.select_faces(faces)
-        dissolved = 0
-        if self.dissolve_old:
-            dissolved = dissolve_replaced_edges(
-                edit_mesh.bm, edit_mesh.uv_layer, [face for face in faces if face.is_valid],
-                polylines, self.parallel_angle, self.tolerance)
-        return added, dissolved
-
     def _run_grid(self, context, edit_meshes):
+        cut_shells = 0
         added = 0
         dissolved = 0
-        island_count = 0
-        axes = AXIS_SETS[self.axis]
         for edit_mesh in edit_meshes:
-            selected = uv_islands.collect_selected_islands(
-                edit_mesh.bm, edit_mesh.uv_layer, context.tool_settings)
-            for island in selected:
-                bounds = uv_islands.bounds(island.selected_faces, edit_mesh.uv_layer)
-                polylines = grid_polylines(bounds, axes, self.interval,
-                                           self.align_to_island, self.tolerance)
-                if not polylines:
-                    continue
-                island_added, island_dissolved = self._cut_and_dissolve(
-                    edit_mesh, island.selected_faces, polylines)
-                added += island_added
-                dissolved += island_dissolved
-                island_count += 1
-        if island_count == 0:
+            shells, shell_added, shell_dissolved = cut_by_grid(
+                edit_mesh.bm, edit_mesh.uv_layer, context.tool_settings,
+                AXIS_SETS[self.axis], self.interval, self.align_to_island,
+                self.dissolve_old, self.parallel_angle, self.tolerance)
+            cut_shells += shells
+            added += shell_added
+            dissolved += shell_dissolved
+        if cut_shells == 0:
             self.report({"WARNING"}, "没有选中的 UV 孤岛，或间隔大于孤岛尺寸")
             return None
-        return f"切了 {island_count} 个孤岛", added, dissolved
+        return f"切了 {cut_shells} 片壳", added, dissolved
 
     def _side_of(self, edit_mesh, islands):
         """被切的一侧只动选中的面，当参考的一侧要拿整座孤岛的布线。"""
@@ -500,8 +435,18 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
             self.report({"WARNING"}, "参考侧没有内部边，没有可用的布线")
             return None
 
-        added, dissolved = self._cut_and_dissolve(
-            target.mesh, target.selected_faces, polylines)
+        edit_mesh = target.mesh
+        cut_edges = set()
+        before = len(edit_mesh.bm.faces)
+        faces = cut_faces(edit_mesh.bm, edit_mesh.uv_layer, target.selected_faces,
+                          polylines, self.tolerance, cut_edges)
+        added = len(edit_mesh.bm.faces) - before
+        uv_islands.select_faces(faces)
+        dissolved = 0
+        if self.dissolve_old:
+            dissolved = dissolve_replaced_edges(
+                edit_mesh.bm, edit_mesh.uv_layer, [face for face in faces if face.is_valid],
+                polylines, self.parallel_angle, self.tolerance, cut_edges)
 
         label = pairing
         if reference.mesh.object != target.mesh.object:
@@ -516,7 +461,11 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
             return {"CANCELLED"}
 
         if self.mode == "GRID":
-            result = self._run_grid(context, edit_meshes)
+            try:
+                result = self._run_grid(context, edit_meshes)
+            except ValueError as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
         else:
             result = self._run_reference(context, edit_meshes)
         if result is None:
