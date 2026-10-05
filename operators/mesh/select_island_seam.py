@@ -11,6 +11,12 @@ class SHIYUME_OT_SelectIslandSeam(bpy.types.Operator):
     bl_label = "选孤岛接缝边"
     bl_options = {'REGISTER', 'UNDO'}
 
+    include_ends: bpy.props.BoolProperty(
+        name="包含首尾",
+        description="同时选中开口的首尾边（只挨着一个面的边），方便把整圈都标成接缝",
+        default=False,
+    )
+
     @classmethod
     def poll(cls, context):
         return context.mode == 'EDIT_MESH'
@@ -34,7 +40,13 @@ class SHIYUME_OT_SelectIslandSeam(bpy.types.Operator):
 
             seams = []
             for edge in bm.edges:
-                if edge.hide or len(edge.link_faces) != 2:
+                if edge.hide:
+                    continue
+                if len(edge.link_faces) == 1:
+                    if self.include_ends and (not selected or edge.link_faces[0] in selected):
+                        seams.append(edge)
+                    continue
+                if len(edge.link_faces) != 2:
                     continue
                 first, second = edge.link_faces
                 if owner[first] == owner[second]:
@@ -56,5 +68,5 @@ class SHIYUME_OT_SelectIslandSeam(bpy.types.Operator):
             bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
             edge_total += len(seams)
 
-        self.report({'INFO'}, f"已选中 {edge_total} 条孤岛接缝边")
+        self.report({'INFO'}, f"已选中 {edge_total} 条边")
         return {'FINISHED'}
