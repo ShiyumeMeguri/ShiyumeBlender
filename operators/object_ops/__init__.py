@@ -1,10 +1,12 @@
 import bpy
 from . import clear_empty
 from . import sort_roots_x
+from . import armature_to_edge_mesh
 
 classes = (
     clear_empty.SHIYUME_OT_ClearEmpty,
     sort_roots_x.SHIYUME_OT_SortRootsX,
+    armature_to_edge_mesh.SHIYUME_OT_ArmatureToEdgeMesh,
 )
 
 def register():

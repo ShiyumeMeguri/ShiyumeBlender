@@ -16,7 +16,6 @@ from . import uv_islands
 
 AXIS_INDEX = {"U": 0, "V": 1}
 SNAP_RATIO = 0.02
-PIN_RATIO = 0.25
 LEVEL_LIMIT = 20000
 
 
@@ -340,20 +339,53 @@ def _row_leaves_quads(row):
     return True
 
 
-def _pin_rows(rows, field, levels, interval):
-    """溶解之后会留下多余角的旧行（接缝尽头、尖端扇形）整条压平到最近的一条刀路上，
-    它就成了刀路本身；离刀路太远就保留，当作多出来的一行。"""
-    if not levels:
-        return
+def _landmark_knots(rows, field, levels):
+    """溶解之后仍会留下多余角的旧行，它的拓扑地标（接缝的尽头、尖端的顶点）必须落在一条刀路上。
+    返回 (地标场值下限, 上限, 目标刀路) 列表。"""
+    knots = []
     for row in _rows(rows):
         if _row_leaves_quads(row):
             continue
-        verts = {vert for edge in row for vert in edge.verts}
-        mean = sum(field[vert] for vert in verts) / len(verts)
-        nearest = min(levels, key=lambda level: abs(level - mean))
-        if abs(nearest - mean) <= interval * PIN_RATIO:
-            for vert in verts:
-                field[vert] = nearest
+        counts = {}
+        for edge in row:
+            for vert in edge.verts:
+                counts[vert] = counts.get(vert, 0) + 1
+        values = [field[vert] for vert, count in counts.items() if len(vert.link_edges) - count >= 3]
+        if not values:
+            continue
+        mean = sum(values) / len(values)
+        knots.append((min(values), max(values), min(levels, key=lambda level: abs(level - mean))))
+    return knots
+
+
+def _warp_field(verts, field, knots):
+    """把场做一次单调的分段线性变形，让每个地标正好落在目标刀路上：
+    网格不动，只是地标之间的刀距按比例伸缩，旧行就不必再保留成多出来的一行。"""
+    knots.sort()
+    positions = []
+    targets = []
+    for low, high, target in knots:
+        for position in (low, high):
+            position = max(position, positions[-1] + 1e-9) if positions else position
+            positions.append(position)
+            targets.append(max(target, targets[-1] if targets else target))
+    values = numpy.array([field[vert] for vert in verts])
+    warped = numpy.interp(values, positions, targets)
+    below = values < positions[0]
+    above = values > positions[-1]
+    warped[below] = values[below] + (targets[0] - positions[0])
+    warped[above] = values[above] + (targets[-1] - positions[-1])
+    for vert, value in zip(verts, warped):
+        field[vert] = float(value)
+
+
+def _grid_levels(values, origin, interval, snap):
+    step = math.ceil((min(values) + snap - origin) / interval)
+    levels = []
+    while origin + step * interval < max(values) - snap:
+        levels.append(origin + step * interval)
+        step += 1
+    return levels
 
 
 def _replaced_edges(rows, field, origin, interval, snap):
@@ -401,16 +433,15 @@ def cut_by_grid(bm, uv_layer, tool_settings, axes, interval, align_to_island,
             faces = {face for index in shell for face in islands[index].selected_faces}
             low = min(field[loop.vert] for face in faces for loop in face.loops)
             origin = low if align_to_island else 0.0
-            values = [field[loop.vert] for face in faces for loop in face.loops]
-            high = max(values)
-            step = math.ceil((min(values) + snap - origin) / interval)
-            levels = []
-            while origin + step * interval < high - snap:
-                levels.append(origin + step * interval)
-                step += 1
-            if dissolve_old:
-                _pin_rows(_row_edges(faces, uv_layer, axis_index, tolerance, slope, cut_edges),
-                          field, levels, interval)
+            verts = list({loop.vert for face in faces for loop in face.loops})
+            levels = _grid_levels([field[vert] for vert in verts], origin, interval, snap)
+            if dissolve_old and levels:
+                knots = _landmark_knots(
+                    _row_edges(faces, uv_layer, axis_index, tolerance, slope, cut_edges),
+                    field, levels)
+                if knots:
+                    _warp_field(verts, field, knots)
+                    levels = _grid_levels([field[vert] for vert in verts], origin, interval, snap)
             for level in levels:
                 _cut_level(faces, field, level, snap, cut_edges)
             if levels:

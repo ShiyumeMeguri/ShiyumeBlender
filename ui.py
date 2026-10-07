@@ -36,6 +36,11 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.clear_empty", icon="X")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
 
+            if context.active_object is not None and context.active_object.type == 'ARMATURE':
+                layout.separator()
+                layout.label(text="骨架")
+                layout.operator("shiyume.armature_to_edge_mesh", icon="OUTLINER_OB_ARMATURE")
+
             layout.separator()
             layout.label(text="头发")
             layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
@@ -133,6 +138,7 @@ class SHIYUME_PT_Animation(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator("shiyume.auto_bone_orientation", icon="CONSTRAINT_BONE")
+        layout.operator("shiyume.armature_to_edge_mesh", icon="OUTLINER_OB_ARMATURE")
         layout.separator()
         layout.operator("shiyume.fix_all_anim_issues", icon="AUTO")
         layout.operator("shiyume.animation_offset", icon="ACTION")
