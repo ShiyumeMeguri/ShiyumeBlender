@@ -270,13 +270,21 @@ class SHIYUME_PT_UVTransfer(bpy.types.Panel):
                         text=target_text, icon='UV_ISLANDSEL')
 
         layout.prop(settings, "color_source", expand=True)
+        layout.prop(settings, "merge_material")
+        resample = settings.color_source == 'IMAGE'
+        if resample:
+            layout.row().prop(settings, "write_mode", expand=True)
 
         col = layout.column(align=True)
-        col.prop(settings, "resolution")
+        row = col.row(align=True)
+        row.enabled = not (resample and settings.write_mode == 'EXISTING')
+        row.prop(settings, "resolution")
         col.prop(settings, "margin")
-        if settings.color_source == 'IMAGE':
+        if resample:
             col.prop(settings, "supersample")
-            col.prop(settings, "extension")
+            col = layout.column(align=True)
+            col.prop(settings, "normal_labels")
+            col.prop(settings, "normal_convention", text="")
         else:
             col.prop(settings, "bake_type")
             col.prop(settings, "bake_samples")
@@ -286,7 +294,7 @@ class SHIYUME_PT_UVTransfer(bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(settings, "save_to_disk")
         sub = col.column(align=True)
-        sub.enabled = settings.save_to_disk
+        sub.enabled = settings.save_to_disk and not (resample and settings.write_mode == 'EXISTING')
         sub.prop(settings, "output_dir", text="")
 
         layout.operator("shiyume.uv_transfer", icon='TEXTURE')

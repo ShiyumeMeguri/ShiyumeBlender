@@ -7,9 +7,10 @@
   这与 ortho_scale=1、对准 (0.5, 0.5) 的正交顶视相机是同一个投影——"把网格改成
   什么样，贴图就排成什么样"。
 
-产出分两份：``triangles`` 供重采样，直接取自求值后的网格，修改器怎么改拓扑都行；
-``base_loop_uv`` 是同一排布在**原始网格**上的逐 loop 表示，只有烘焙的临时 UV 层与
-排布写回需要它，拓扑被改过就给不出来。
+产出三份：``slots`` 是按材质槽分组的三角形（目标坐标与三个 loop 下标），``loop_uv`` 是同一份网格上
+全部 UV 层的逐 loop 坐标——三角形拿 loop 下标去任意一个 UV 层里取源坐标，修改器怎么改拓扑都行；
+``base_loop_uv`` 是同一排布在**原始网格**上的逐 loop 表示，只有烘焙的临时 UV 层与排布写回需要它，
+拓扑被改过就给不出来。
 """
 
 import numpy as np
@@ -21,8 +22,9 @@ SOURCE_OBJECT_PROP = "shiyume_uv_source"
 
 
 class Layout:
-    def __init__(self, triangles, base_loop_uv):
-        self.triangles = triangles
+    def __init__(self, slots, loop_uv, base_loop_uv):
+        self.slots = slots
+        self.loop_uv = loop_uv
         self.base_loop_uv = base_loop_uv
 
 
@@ -40,6 +42,11 @@ def _world_loop_xy(evaluated, evaluated_mesh):
     return np.ascontiguousarray(world[loop_vertices, 0:2])
 
 
+def _slots(mesh, target_loop_uv):
+    return {index: (target_loop_uv[loops], loops)
+            for index, loops in mesh_bind.loops_by_material(mesh).items()}
+
+
 def resolve(context, obj, settings):
     """解析该物体的目标排布；目标 UV 层不存在时返回 None。"""
     mesh = obj.data
@@ -48,19 +55,16 @@ def resolve(context, obj, settings):
         loop_uv = mesh_bind.read_uv(mesh, settings.target_uv)
         if loop_uv is None:
             return None
-        triangles = mesh_bind.triangles_by_material(mesh, settings.source_uv, loop_uv)
-        return Layout(triangles, loop_uv)
+        return Layout(_slots(mesh, loop_uv), mesh_bind.read_all_uv(mesh), loop_uv)
 
     depsgraph = context.evaluated_depsgraph_get()
     evaluated = obj.evaluated_get(depsgraph)
     evaluated_mesh = evaluated.to_mesh()
     try:
         loop_uv = _world_loop_xy(evaluated, evaluated_mesh)
-        triangles = mesh_bind.triangles_by_material(
-            evaluated_mesh, settings.source_uv, loop_uv)
         # 拓扑没被改动时，同一排布才能落回原始网格的 loop 上
         base_loop_uv = loop_uv if len(evaluated_mesh.loops) == len(mesh.loops) else None
-        return Layout(triangles, base_loop_uv)
+        return Layout(_slots(evaluated_mesh, loop_uv), mesh_bind.read_all_uv(evaluated_mesh), base_loop_uv)
     finally:
         evaluated.to_mesh_clear()
 

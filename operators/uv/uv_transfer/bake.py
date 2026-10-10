@@ -11,10 +11,8 @@
 
 import bpy
 
-from . import graph_bind
 from . import image_bind
 from . import layout
-from . import mesh_bind
 
 _BAKE_NODE_NAME = "_ShiyumeBakeTarget"
 _BAKE_UV_NAME = "_ShiyumeBakeLayout"
@@ -29,23 +27,27 @@ def _resolve_size(job):
     width = 0
     height = 0
     for entry in job.entries:
-        render_uv = mesh_bind.render_uv_name(entry.mesh)
-        for material in entry.mesh.materials:
-            bound, _unknown = graph_bind.image_nodes_using_uv(
-                material, job.source_uv, render_uv)
-            for _node, image in bound:
-                width = max(width, image.size[0])
-                height = max(height, image.size[1])
+        for _slot, material in entry.slot_materials():
+            for sampling in job.samplings(material, entry.mesh):
+                if sampling.uv_name == job.source_uv and image_bind.has_content(sampling.image):
+                    width = max(width, sampling.image.size[0])
+                    height = max(height, sampling.image.size[1])
     return width, height
 
 
 def _unique_materials(job):
     materials = {}
     for entry in job.entries:
-        for material in entry.mesh.materials:
-            if material is not None and material.use_nodes and material.node_tree:
+        for _slot, material in entry.slot_materials():
+            if material is not None and material.node_tree is not None:
                 materials[material.as_pointer()] = material
     return list(materials.values())
+
+
+def _receivers(job):
+    """烘焙结果要接进哪些材质：合并时只接目标材质，否则接参与的全部材质。"""
+    merge_material = job.settings.merge_material
+    return [merge_material] if merge_material is not None else _unique_materials(job)
 
 
 def _add_layout_uv(job):
@@ -151,6 +153,13 @@ def run(job):
     if not materials:
         job.error("选中网格上没有使用节点的材质，无法烘焙")
         return None
+    if job.settings.apply_to_object:
+        for receiver in _receivers(job):
+            foreign = job.foreign_users(receiver)
+            if foreign:
+                job.error(f"材质 '{receiver.name}' 还被 {', '.join(foreign[:5])} 使用，把烘焙图接进它会让这些物体"
+                          f"一起变色 —— 先把材质单独给选中物体用，或关掉「应用到物体」")
+                return None
 
     name = image_bind.unique_name(
         f"{job.entries[0].obj.name}_Bake", job.output_directory)
@@ -182,15 +191,15 @@ def run(job):
         _remove_bake_targets(created)
         _restore_scene(scene, state)
 
-    return {'outputs': [image], 'image': image}
+    return {'outputs': [image], 'created': [(None, image)], 'updated': [], 'image': image}
 
 
 def apply(job, result):
-    """把烘焙结果接到每个材质的 Principled Base Color 上。"""
+    """把烘焙结果接到接收材质的 Principled Base Color 上（合并时只有目标材质）。"""
     image = result['image']
     missing = []
 
-    for material in _unique_materials(job):
+    for material in _receivers(job):
         tree = material.node_tree
         principled = next(
             (node for node in tree.nodes if node.type == 'BSDF_PRINCIPLED'), None)

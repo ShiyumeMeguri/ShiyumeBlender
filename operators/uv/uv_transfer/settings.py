@@ -34,7 +34,7 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
     resolution: bpy.props.EnumProperty(
         name="分辨率",
         items=[
-            ('SOURCE', "跟随源图", "沿用每张源贴图自身的分辨率"),
+            ('SOURCE', "跟随源图", "沿用源贴图的分辨率；合并时取参与合成的最大一张。写入现有贴图时恒为目标图尺寸"),
             ('512', "512", ""),
             ('1024', "1024", ""),
             ('2048', "2048", ""),
@@ -46,12 +46,12 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
     supersample: bpy.props.EnumProperty(
         name="超采样",
         items=[
-            ('1', "1x", "逐像素单点采样，边缘为硬边"),
-            ('2', "2x", "每像素 4 个采样点"),
-            ('4', "4x", "每像素 16 个采样点"),
+            ('1', "1x", "每像素在中心取一次双线性：孤岛只平移时逐位不变，缩放旋转时最锐"),
+            ('2', "2x", "每像素 4 个采样点平均：孤岛缩小较多时抗锯齿"),
+            ('4', "4x", "每像素 16 个采样点平均：孤岛缩小很多时抗锯齿"),
         ],
-        default='2',
-        description="边缘抗锯齿倍率。RGB 只按几何覆盖加权平均，不会掺入背景色",
+        default='1',
+        description="每像素采样数。多点是盒式平均，会让没缩小的孤岛也略微变糊；四个通道都只按几何覆盖平均，不会掺入背景",
     )
     margin: bpy.props.IntProperty(
         name="外扩",
@@ -71,19 +71,45 @@ class SHIYUME_PG_UVTransfer(bpy.types.PropertyGroup):
         name="烘焙采样",
         default=32, min=1, max=4096,
     )
-    extension: bpy.props.EnumProperty(
-        name="越界",
+    merge_material: bpy.props.PointerProperty(
+        name="合并到材质",
+        type=bpy.types.Material,
+        description=(
+            "留空：各面材质不变，每张源图各出一张。指定：选中网格的全部面改用这张材质，"
+            "它每个经源 UV 采样的贴图节点按节点标签，从各面原材质里同标签的节点取色合成一张"
+        ),
+    )
+    write_mode: bpy.props.EnumProperty(
+        name="写入",
         items=[
-            ('REPEAT', "重复", "源 UV 超出 0~1 时循环取样"),
-            ('EXTEND', "延展", "源 UV 超出 0~1 时钳到边缘"),
+            ('NEW', "新建贴图", "输出到新的图像数据块（自动编号，不覆盖已有数据块与文件）"),
+            ('EXISTING', "写入现有贴图",
+             "直接画进目标贴图并存回原文件：只写本次网格新排布覆盖的像素与就近外扩，"
+             "文件里其他网格经 UV 用到的像素原样保留"),
         ],
-        default='REPEAT',
+        default='NEW',
+    )
+    normal_labels: bpy.props.StringProperty(
+        name="切线法线",
+        description=(
+            "哪些贴图节点是切线空间法线贴图（按节点标签，逗号分隔）：孤岛旋转/镜像时法线 XY 跟着转。"
+            "直接接「法线贴图」节点（切线空间）的自动识别"
+        ),
+    )
+    normal_convention: bpy.props.EnumProperty(
+        name="法线约定",
+        items=[
+            ('OPENGL', "OpenGL（Y+）", "绿通道朝 +V（Blender、Unity）"),
+            ('DIRECTX', "DirectX（Y-）", "绿通道朝 -V"),
+        ],
+        default='OPENGL',
+        description="按标签指定的切线法线贴图的绿通道朝向",
     )
     apply_to_object: bpy.props.BoolProperty(
         name="应用到物体",
         default=True,
         description=(
-            "完成后把新贴图接回材质，并对调两个 UV 层的数据："
+            "完成后把新贴图接回材质（合并时全部面改用目标材质），并对调两个 UV 层的数据："
             "源层拿到新布局、目标层接住旧布局。两层都保留，再执行一次即可换回"
         ),
     )

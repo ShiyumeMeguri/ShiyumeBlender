@@ -1,179 +1,389 @@
-"""IMAGE 颜色源：直接把源 UV 上的贴图重采样到目标 UV 排布。
+"""IMAGE 颜色源：把各面材质里的贴图逐像素重采样到目标排布，不经渲染引擎。
 
-在目标 UV 空间光栅化三角形，逐样本插值出源 UV 再采样源图——不经渲染引擎，
-因此没有抗锯齿边缘与背景混色，边缘像素永远不会被外扩区反向污染。
+在目标排布上光栅化三角形，逐样本插值出源坐标再采样源图。每张输出由若干份「贡献」合成：一组三角形、它们从哪张
+源图、经哪个 UV 层与哪个贴图坐标变换取色。贡献按着色器看到的数值（解码后的线性值）累加，RGB 与 alpha 一样只按
+几何覆盖归一化、一样向外扩——alpha 是透明度、光滑度这类数据，不是覆盖率；切线法线在旋转/镜像过的孤岛上跟着转。
+
+两种出图方式：
+
+- 不合并：每张源图各出一张，贡献是用它的那些面。
+- 合并到材质：选中网格的全部面改用指定材质；它每个经源 UV 采样的贴图节点按节点标签，从各面原材质里同标签的
+  节点取色，合成一张。
+
+两种写入方式：新建贴图（新数据块，自动编号），或写入现有贴图——直接画进目标图，只写本次网格新排布覆盖的像素
+与就近的外扩，文件里其他网格经 UV 用到的像素一律保留。
 """
 
+import bpy
 import numpy as np
 
-from . import graph_bind
 from . import image_bind
 from . import kernel
 from . import mesh_bind
 
-# 一批同时驻留内存的源图字节上限
-_SOURCE_MEMORY_BUDGET = 512 * 1024 * 1024
+_PROTECTION_SUPERSAMPLE = 2
+_PROTECTION_RING = 1
+_CONFLICT_TEXELS = 3.0
 
 
-def _memory_batches(images, budget):
-    """按源图内存占用把图像分批，避免一次读入过多大图。"""
-    batches = []
-    current = []
-    current_bytes = 0
-    for image in images:
-        width, height = image.size
-        needed = width * height * 4 * 4
-        if current and current_bytes + needed > budget:
-            batches.append(current)
-            current = []
-            current_bytes = 0
-        current.append(image)
-        current_bytes += needed
-    if current:
-        batches.append(current)
-    return batches
+class PlanError(Exception):
+    pass
 
 
-def discover(job):
-    """找出所有采样源 UV 的图像纹理节点，按图像归并其所属 (物体, 材质槽)。"""
-    image_slots = {}
-    image_nodes = {}
-    unresolved = 0
+class Contribution:
+    """一组三角形从一张源图取色。target 是已折进 0~1 的目标贴图坐标，source 是对应的源贴图坐标，
+    turns 是每个三角形的切线法线转向矩阵（不是法线则为 None）。"""
 
-    for index, entry in enumerate(job.entries):
-        render_uv = mesh_bind.render_uv_name(entry.mesh)
-        for slot_index, material in enumerate(entry.mesh.materials):
-            bound, unknown = graph_bind.image_nodes_using_uv(
-                material, job.source_uv, render_uv)
-            unresolved += unknown
-            for node, image in bound:
-                image_slots.setdefault(image, set()).add((index, slot_index))
-                image_nodes.setdefault(image, {})[node.as_pointer()] = node
-
-    return image_slots, image_nodes, unresolved
+    def __init__(self, image, target, source, extension, nearest, turns):
+        self.image = image
+        self.target = target
+        self.source = source
+        self.extension = extension
+        self.nearest = nearest
+        self.turns = turns
 
 
-def _group_by_workload(job, image_slots):
-    """按 (材质槽集合, 输出尺寸) 归组——同组共用一次光栅化。"""
-    groups = {}
-    for image, slots in image_slots.items():
-        if job.settings.resolution == 'SOURCE':
-            width, height = image.size
-        else:
-            width = height = int(job.settings.resolution)
-        if width <= 0 or height <= 0:
-            job.warn(f"图像 '{image.name}' 尺寸为 0，跳过")
-            continue
-        groups.setdefault((frozenset(slots), width, height), []).append(image)
-    return groups
+class Output:
+    """一张输出图：template 决定新建时的色彩空间、位深与 alpha 解释，destination 是写入现有贴图时的目标图；
+    extension 与 matrix 是这张图将来被读时的越界方式与贴图坐标变换——目标三角形按它们落位。"""
+
+    def __init__(self, key, template, destination, extension, matrix):
+        self.key = key
+        self.template = template
+        self.destination = destination
+        self.extension = extension
+        self.matrix = matrix
+        self.width = 0
+        self.height = 0
+        self.contributions = []
+        self.rebind = []
+        self.uncovered = []
+        self.outside = 0
 
 
-def _gather_triangles(job, slots):
-    target_parts = []
-    source_parts = []
-    for entry_index, slot_index in sorted(slots):
-        pair = job.entries[entry_index].triangles.get(slot_index)
-        if pair is None:
-            continue
-        target_parts.append(pair[0])
-        source_parts.append(pair[1])
+def _contribute(job, output, entry, slot, sampling):
+    target_uv, loops = entry.layout.slots[slot]
+    source_uv = entry.layout.loop_uv[sampling.uv_name][loops]
+    target = kernel.transform(output.matrix, target_uv)
+    source = kernel.transform(sampling.matrix, source_uv)
+    folded, owner, outside = kernel.fold_triangles(target, output.extension)
+    output.outside += outside
+    turns = None
+    if sampling.normal is not None:
+        turns = kernel.normal_turns(source_uv, target_uv, sampling.normal)[owner]
+        job.normals_declared = True
+    elif (sampling.image.colorspace_settings.is_data and image_bind.has_content(sampling.image)
+          and kernel.is_turned(kernel.normal_turns(source_uv, target_uv, kernel.CONVENTION_OPENGL)).any()):
+        job.turned_data_images.add(sampling.image.name)
+    output.contributions.append(Contribution(
+        sampling.image, folded, source[owner], sampling.extension, sampling.nearest, turns))
 
-    if not target_parts:
-        return None, None
-    return np.concatenate(target_parts), np.concatenate(source_parts)
+
+def _output_size(job, images, fallback):
+    if job.settings.resolution != 'SOURCE':
+        size = int(job.settings.resolution)
+        return size, size
+    sizes = [tuple(image.size) for image in images
+             if image_bind.has_content(image) and image.size[0] > 0 and image.size[1] > 0]
+    if not sizes:
+        sizes = [tuple(fallback.size)]
+    return max(width for width, _height in sizes), max(height for _width, height in sizes)
 
 
-def _transfer(job, batch, target_triangles, source_triangles, width, height, outputs):
-    """一次光栅化，供本批所有源图共用；返回检测到的重叠像素数。"""
-    settings = job.settings
+def _plan_by_image(job):
+    users = {}
+    for entry_index, entry in enumerate(job.entries):
+        for slot, material in entry.slot_materials():
+            for sampling in job.samplings(material, entry.mesh):
+                if sampling.uv_name == job.source_uv and image_bind.has_content(sampling.image):
+                    users.setdefault(sampling.image, []).append((entry_index, slot, sampling))
+
+    outputs = []
+    for image, uses in users.items():
+        if len({sampling.addressing() for _entry, _slot, sampling in uses}) > 1:
+            raise PlanError(f"图像 '{image.name}' 被几个节点以不同的坐标变换、越界或插值方式采样，"
+                            f"共用不了一张重定向图")
+        reference = uses[0][2]
+        output = Output(image.name, image, image if job.writes_existing else None,
+                        reference.extension, reference.matrix)
+        contributed = set()
+        for entry_index, slot, sampling in uses:
+            output.rebind.append(sampling.node)
+            if (entry_index, slot) in contributed:
+                continue
+            contributed.add((entry_index, slot))
+            _contribute(job, output, job.entries[entry_index], slot, sampling)
+        output.width, output.height = (tuple(image.size) if job.writes_existing
+                                       else _output_size(job, [image], image))
+        outputs.append(output)
+    return outputs
+
+
+def _role_source(job, entry, material, label):
+    """某个面原材质里与合并目标同标签的节点：有贴图内容的优先（必须唯一），否则取最外层的占位图。"""
+    if material is None:
+        return None
+    candidates = [sampling for sampling in job.samplings(material, entry.mesh)
+                  if sampling.label == label and sampling.uv_name in entry.layout.loop_uv]
+    content = [sampling for sampling in candidates if image_bind.has_content(sampling.image)]
+    if len({sampling.image for sampling in content}) > 1:
+        raise PlanError(f"材质 '{material.name}' 里标签 '{label}' 对应了几张不同的贴图，分不清哪张是这些面的颜色")
+    pool = content or candidates
+    return min(pool, key=lambda sampling: sampling.depth) if pool else None
+
+
+def _plan_merge(job, material):
+    roles = {}
+    unlabeled = set()
+    for entry in job.entries:
+        for sampling in job.samplings(material, entry.mesh):
+            if sampling.uv_name != job.source_uv or not image_bind.has_content(sampling.image):
+                continue
+            if not sampling.label:
+                unlabeled.add(sampling.image.name)
+                continue
+            known = roles.get(sampling.label)
+            if known is None:
+                roles[sampling.label] = [sampling]
+            elif known[0].image != sampling.image or known[0].addressing() != sampling.addressing():
+                raise PlanError(f"合并目标 '{material.name}' 里标签 '{sampling.label}' 对应了不同的贴图或采样方式，"
+                                f"分不清写进哪张")
+            else:
+                known.append(sampling)
+    if unlabeled:
+        job.warn(f"合并按节点标签配对，'{material.name}' 里这些贴图节点没有标签，未参与: "
+                 f"{', '.join(sorted(unlabeled))}")
+    if not roles:
+        raise PlanError(f"合并目标 '{material.name}' 里没有带标签、经 '{job.source_uv}' 采样的贴图节点")
+
+    outputs = []
+    for label, destinations in roles.items():
+        reference = destinations[0]
+        output = Output(label, reference.image, reference.image if job.writes_existing else None,
+                        reference.extension, reference.matrix)
+        output.rebind = [sampling.node for sampling in destinations]
+        for entry in job.entries:
+            for slot, slot_material in entry.slot_materials():
+                source = _role_source(job, entry, slot_material, label)
+                if source is None:
+                    owner = slot_material.name if slot_material is not None else "空槽"
+                    output.uncovered.append(f"{entry.obj.name} / {owner}")
+                    continue
+                _contribute(job, output, entry, slot, source)
+        output.width, output.height = (
+            tuple(reference.image.size) if job.writes_existing
+            else _output_size(job, [contribution.image for contribution in output.contributions], reference.image))
+        outputs.append(output)
+    return outputs
+
+
+def _check_mixing(outputs):
+    for output in outputs:
+        images = [output.template] + [contribution.image for contribution in output.contributions]
+        problem = image_bind.mixing_problem(images)
+        if problem is not None:
+            raise PlanError(f"'{output.key}': {problem}")
+
+
+def _check_rebind(job, outputs):
+    """新建贴图并应用到物体时要换节点上的图：换的若是被选中网格以外的网格也在用的材质或节点组，它们会一起错位。"""
+    for output in outputs:
+        for node in output.rebind:
+            for material in job.materials_owning(node.id_data):
+                foreign = job.foreign_users(material)
+                if foreign:
+                    raise PlanError(
+                        f"材质 '{material.name}' 还被 {', '.join(foreign[:5])} 使用，给它换上新图会让这些物体错位 —— "
+                        f"改用「写入现有贴图」，或先把材质单独给选中物体用")
+
+
+def _render(job, output):
+    """把一张输出的全部贡献光栅化、采样、累加，返回 (着色值 (H, W, 4), 覆盖 (H, W), 内容冲突的像素数)。"""
+    width, height = output.width, output.height
     pixel_total = width * height
-    supersample = int(settings.supersample)
-    subsamples = float(supersample * supersample)
+    supersample = int(job.settings.supersample)
+
+    accumulator = np.zeros((pixel_total, 4), dtype=np.float32)
+    coverage = np.zeros(pixel_total, dtype=np.float32)
+    first_image = np.full(pixel_total, -1, dtype=np.int32)
+    first_texel = np.zeros((pixel_total, 2), dtype=np.float32)
+    conflicted = np.zeros(pixel_total, dtype=bool)
 
     sources = {}
-    for image in batch:
-        pixels = image_bind.read_rgba(image)
-        if pixels is not None:
-            sources[image] = pixels
-    if not sources:
-        return 0
+    identities = {}
+    for contribution in output.contributions:
+        image = contribution.image
+        if image not in sources:
+            sources[image] = image_bind.read_shading(image)
+            identities[image] = len(identities)
+        pixels = sources[image]
+        if pixels is None:
+            continue
+        size = np.array([pixels.shape[1], pixels.shape[0]], dtype=np.float32)
+        identity = identities[image]
+        for pixel, uv, triangle in kernel.iter_samples(contribution.target, contribution.source,
+                                                       width, height, supersample):
+            sampled = kernel.sample(pixels, uv, contribution.extension, contribution.nearest)
+            if contribution.turns is not None:
+                sampled = kernel.turn_normals(sampled, contribution.turns[triangle])
 
-    accumulators = {image: np.zeros((pixel_total, 4), dtype=np.float32)
-                    for image in sources}
-    coverage = np.zeros(pixel_total, dtype=np.float32)
+            texel = (uv - np.floor(uv)) * size
+            fresh = first_image[pixel] < 0
+            first_image[pixel[fresh]] = identity
+            first_texel[pixel[fresh]] = texel[fresh]
+            seen = ~fresh
+            gap = np.abs(texel[seen] - first_texel[pixel[seen]])
+            gap = np.minimum(gap, size - gap)
+            clash = (first_image[pixel[seen]] != identity) | (gap.max(axis=1) > _CONFLICT_TEXELS)
+            conflicted[pixel[seen][clash]] = True
 
-    for pixel, uv in kernel.iter_samples(target_triangles, source_triangles,
-                                         width, height, supersample):
-        coverage += np.bincount(pixel, minlength=pixel_total).astype(np.float32)
-        for image, pixels in sources.items():
-            sampled = kernel.sample_bilinear(pixels, uv, settings.extension)
-            accumulator = accumulators[image]
+            coverage += np.bincount(pixel, minlength=pixel_total).astype(np.float32)
             for channel in range(4):
                 accumulator[:, channel] += np.bincount(
-                    pixel, weights=sampled[:, channel],
-                    minlength=pixel_total).astype(np.float32)
+                    pixel, weights=sampled[:, channel], minlength=pixel_total).astype(np.float32)
+    sources.clear()
 
     covered = coverage > 0.0
-    if not covered.any():
-        return 0
+    shading = np.zeros((pixel_total, 4), dtype=np.float32)
+    np.divide(accumulator, coverage[:, None], out=shading, where=covered[:, None])
+    return shading.reshape(height, width, 4), covered.reshape(height, width), int(conflicted.sum())
 
-    for image in sources:
-        accumulator = accumulators[image]
-        rgba = np.zeros((pixel_total, 4), dtype=np.float32)
-        # RGB 只按几何覆盖归一化——边缘像素拿到的是纯表面色，绝不掺背景
-        np.divide(accumulator[:, 0:3], coverage[:, None],
-                  out=rgba[:, 0:3], where=covered[:, None])
-        # alpha 按整像素足迹归一化，未覆盖的子采样点自然把边缘压软
-        np.divide(accumulator[:, 3], subsamples, out=rgba[:, 3], where=covered)
-        np.clip(rgba[:, 3], 0.0, 1.0, out=rgba[:, 3])
 
-        planar = rgba.reshape(height, width, 4)
-        kernel.dilate_edges(planar, covered.reshape(height, width), settings.margin)
+def _protected(job, output):
+    """目标图里被选中网格以外的网格经 UV 读到的像素（含双线性读到的一圈），返回 (H, W) bool。"""
+    image = output.destination
+    width, height = output.width, output.height
+    mask = np.zeros((height, width), dtype=bool)
+    relaid = job.relaid_meshes()
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH' or obj.data.as_pointer() in relaid:
+            continue
+        mesh = obj.data
+        slot_loops = None
+        uv_layers = {}
+        for slot_index, slot in enumerate(obj.material_slots):
+            material = slot.material
+            if material is None:
+                continue
+            if any(item.uv_dependent and item.image == image for item in job.unresolved(material, mesh)):
+                job.unprotected.add(f"{obj.name} / {material.name}")
+            uses = [sampling for sampling in job.samplings(material, mesh) if sampling.image == image]
+            if not uses:
+                continue
+            if slot_loops is None:
+                slot_loops = mesh_bind.loops_by_material(mesh)
+            loops = slot_loops.get(slot_index)
+            if loops is None:
+                continue
+            for sampling in uses:
+                if sampling.uv_name not in uv_layers:
+                    uv_layers[sampling.uv_name] = mesh_bind.read_uv(mesh, sampling.uv_name)
+                uv = uv_layers[sampling.uv_name]
+                if uv is None:
+                    job.unprotected.add(f"{obj.name} / {material.name}")
+                    continue
+                triangles = kernel.transform(sampling.matrix, uv[loops])
+                folded, _owner, _outside = kernel.fold_triangles(triangles, sampling.extension)
+                mask |= kernel.coverage_mask(folded, width, height, _PROTECTION_SUPERSAMPLE)
+    return kernel.grow(mask, _PROTECTION_RING)
 
-        name = image_bind.unique_name(
-            image_bind.output_name(image), job.output_directory)
-        output = image_bind.create_output(name, width, height, image)
-        image_bind.write_rgba(output, planar)
-        outputs[image] = output
 
-    return int((coverage > subsamples + 0.5).sum())
+def _compose_new(job, output, shading, covered):
+    kernel.dilate(shading, covered, job.settings.margin)
+    template = output.template
+    raw = image_bind.encode(shading, image_bind.encoding_of(template), clamp=not template.is_float)
+    name = image_bind.unique_name(image_bind.output_name(template), job.output_directory)
+    image = image_bind.create_output(name, output.width, output.height, template)
+    image_bind.write_raw(image, raw)
+    return image
+
+
+def _compose_existing(job, output, shading, covered):
+    destination = output.destination
+    protected = _protected(job, output)
+    writable = covered & ~protected
+    clashed = int(np.count_nonzero(covered & protected))
+    filled = kernel.dilate(shading, writable, job.settings.margin, protected)
+    written = writable | filled
+    raw = image_bind.read_raw(destination)
+    raw[written] = image_bind.encode(shading[written], image_bind.encoding_of(destination),
+                                     clamp=not destination.is_float)
+    image_bind.write_raw(destination, raw)
+    return clashed
 
 
 def run(job):
-    image_slots, image_nodes, unresolved = discover(job)
+    merge_material = job.settings.merge_material
+    try:
+        outputs = _plan_merge(job, merge_material) if merge_material is not None else _plan_by_image(job)
+        _check_mixing(outputs)
+        if job.settings.apply_to_object and not job.writes_existing:
+            _check_rebind(job, outputs)
+    except PlanError as problem:
+        job.error(str(problem))
+        return None
+
+    unresolved = job.unresolved_images()
     if unresolved:
-        job.warn(f"{unresolved} 个图像节点的 UV 来源无法判定（Vector 接了自定义节点），未参与重定向")
-    if not image_slots:
-        job.error(f"没有找到采样 '{job.source_uv}' 的图像纹理节点")
-        return None
-
-    outputs = {}
-    overlapped = 0
-
-    for (slots, width, height), images in _group_by_workload(job, image_slots).items():
-        target_triangles, source_triangles = _gather_triangles(job, slots)
-        if target_triangles is None:
-            continue
-        for batch in _memory_batches(images, _SOURCE_MEMORY_BUDGET):
-            overlapped += _transfer(job, batch, target_triangles, source_triangles,
-                                    width, height, outputs)
-
+        job.warn(f"这些贴图经无法换算的坐标采样 UV（非常量变换、视差、非平面投影或 UDIM），没有参与重定向: "
+                 f"{', '.join(unresolved)}")
+    outputs = [output for output in outputs if output.contributions]
     if not outputs:
-        job.error("目标 UV 上没有任何三角形落进 0~1 范围")
+        job.error(f"没有找到经 '{job.source_uv}' 采样、带贴图内容的图像节点")
+        return None
+    if job.writes_existing:
+        locked = [output.destination.name for output in outputs
+                  if output.destination.library is not None or output.destination.source not in ('FILE', 'GENERATED')]
+        if locked:
+            job.error(f"这些目标图来自库文件或不是单张图片，不能就地写入: {', '.join(locked)}")
+            return None
+
+    rendered = [(output,) + _render(job, output) for output in outputs]
+
+    created = []
+    updated = []
+    conflicts = 0
+    clashes = 0
+    for output, shading, covered, conflicted in rendered:
+        conflicts += conflicted
+        if not covered.any():
+            continue
+        if job.writes_existing:
+            clashes += _compose_existing(job, output, shading, covered)
+            updated.append(output.destination)
+        else:
+            created.append((output, _compose_new(job, output, shading, covered)))
+
+    if not created and not updated:
+        job.error("目标排布上没有任何三角形落进贴图范围")
         return None
 
-    if overlapped:
-        job.warn(f"目标 UV 有 {overlapped} 个像素被多个面覆盖，重叠处取最后写入的面")
+    outside = sum(output.outside for output in outputs)
+    if outside:
+        job.warn(f"{outside} 个三角形落在 0~1 外，而读它们的节点越界方式是延展/裁剪，排布里放不下，未写入")
+    if conflicts:
+        job.warn(f"目标排布里有 {conflicts} 个像素被内容不同的面重叠覆盖，已取平均")
+    if clashes:
+        job.warn(f"{clashes} 个像素与其他网格用到的区域重叠，为保护它们未写入")
+    if job.unprotected:
+        job.warn(f"这些网格读目标图的坐标无法判定，写入时没能避开它们: {', '.join(sorted(job.unprotected))}")
+    fate = "保持目标图原样" if job.writes_existing else "留空"
+    for output in outputs:
+        if output.uncovered:
+            job.warn(f"'{output.key}' 在这些面上没有同标签的来源，那里{fate}: {', '.join(output.uncovered)}")
+    if job.turned_data_images and not job.normals_declared:
+        job.warn(f"有孤岛旋转/镜像过，但这次没有任何贴图被当作切线法线，这些非颜色贴图按普通数值搬运: "
+                 f"{', '.join(sorted(job.turned_data_images))} —— 其中若有切线法线贴图，把它的节点标签填进「切线法线」")
 
     return {
-        'outputs': list(outputs.values()),
-        'replacements': outputs,
-        'nodes': image_nodes,
+        'outputs': [image for _output, image in created] + updated,
+        'created': created,
+        'updated': updated,
     }
 
 
 def apply(job, result):
-    """把新贴图接回原本采样源 UV 的那些图像节点。"""
-    for source_image, output in result['replacements'].items():
-        for node in result['nodes'].get(source_image, {}).values():
-            node.image = output
+    """新建的贴图接回要读它的那些节点；写入现有贴图的节点不用动。"""
+    for output, image in result['created']:
+        for node in output.rebind:
+            node.image = image
