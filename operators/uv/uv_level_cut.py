@@ -16,6 +16,8 @@ from . import uv_islands
 
 AXIS_INDEX = {"U": 0, "V": 1}
 SNAP_RATIO = 0.02
+END_MERGE_RATIO = 0.5
+COINCIDENT_DISTANCE = 1.0e-6
 LEVEL_LIMIT = 20000
 
 
@@ -33,6 +35,36 @@ def uv_continuous(edge, uv_layer, tolerance):
         if matching is None or (matching - loop[uv_layer].uv).length > tolerance:
             return False
     return True
+
+
+def coincident_twins(bm, faces):
+    """世界空间里完全重合的顶点在场里是同一个坐标：同一连通块内位置相同的顶点互为孪生。
+    网格一个顶点都不合并，只让孤岛之间借孪生顶点当场的边界条件，
+    两端的尖点与孤岛交界处不再各算各的。返回 顶点 -> 同组全部顶点 的字典。"""
+    verts = list({vert for face in faces for vert in face.verts})
+    component = {}
+    for start in verts:
+        if start in component:
+            continue
+        component[start] = start
+        stack = [start]
+        while stack:
+            current = stack.pop()
+            for edge in current.link_edges:
+                other = edge.other_vert(current)
+                if other not in component:
+                    component[other] = start
+                    stack.append(other)
+    found = bmesh.ops.find_doubles(bm, verts=verts, dist=COINCIDENT_DISTANCE)["targetmap"]
+    groups = {}
+    for vert, target in found.items():
+        if component[vert] is component[target]:
+            groups.setdefault(target, [target]).append(vert)
+    twins = {}
+    for members in groups.values():
+        for vert in members:
+            twins[vert] = members
+    return twins
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +188,8 @@ def _extend_into_island(faces, values, uv_layer, field):
             field[vert] = float(base[index] + correction[index])
 
 
-def build_field(islands, uv_layer, axis_index):
-    """返回 (场, 壳列表)。壳是经共享顶点连通的孤岛编号列表，每片壳一个参考孤岛。"""
+def build_field(islands, uv_layer, axis_index, twins):
+    """返回 (场, 壳列表)。壳是经共享顶点（含位置重合的孪生顶点）连通的孤岛编号列表，每片壳一个参考孤岛。"""
     island_faces = [island.selected_faces for island in islands]
     island_values = [_island_values(faces, uv_layer, axis_index) for faces in island_faces]
     extents = [max(values.values()) - min(values.values()) if values else 0.0
@@ -166,7 +198,12 @@ def build_field(islands, uv_layer, axis_index):
     owners = {}
     for index, values in enumerate(island_values):
         for vert in values:
-            owners.setdefault(vert, []).append(index)
+            owners.setdefault(twins.get(vert, (vert,))[0], []).append(index)
+
+    def share_with_twins(values):
+        for vert in values:
+            for twin in twins.get(vert, ()):
+                field.setdefault(twin, field[vert])
 
     field = {}
     assigned = [False] * len(islands)
@@ -176,13 +213,14 @@ def build_field(islands, uv_layer, axis_index):
             continue
         assigned[start] = True
         field.update(island_values[start])
+        share_with_twins(island_values[start])
         shell = [start]
         cursor = 0
         while cursor < len(shell):
             current = shell[cursor]
             cursor += 1
             neighbors = sorted(
-                {other for vert in island_values[current] for other in owners[vert]
+                {other for vert in island_values[current] for other in owners[twins.get(vert, (vert,))[0]]
                  if not assigned[other]},
                 key=lambda index: -extents[index])
             for other in neighbors:
@@ -190,6 +228,7 @@ def build_field(islands, uv_layer, axis_index):
                     continue
                 assigned[other] = True
                 _extend_into_island(island_faces[other], island_values[other], uv_layer, field)
+                share_with_twins(island_values[other])
                 shell.append(other)
         shells.append(shell)
     return field, shells
@@ -379,8 +418,15 @@ def _warp_field(verts, field, knots):
         field[vert] = float(value)
 
 
+def _anchored_grid(values, interval):
+    """刀路从壳的最高值（长条的发根一端）起按固定间隔往下排：并排的长条在同一高度处刀路相同，
+    只有末段随长度不同，短于半个间隔的碎段并进前一段。"""
+    return max(values), interval
+
+
 def _grid_levels(values, origin, interval, snap):
-    step = math.ceil((min(values) + snap - origin) / interval)
+    end_gap = max(snap, END_MERGE_RATIO * interval)
+    step = math.ceil((min(values) + end_gap - origin) / interval)
     levels = []
     while origin + step * interval < max(values) - snap:
         levels.append(origin + step * interval)
@@ -389,13 +435,24 @@ def _grid_levels(values, origin, interval, snap):
 
 
 def _replaced_edges(rows, field, origin, interval, snap):
+    """被替换的旧行：不在任何刀路上的，以及同一刀路上挤在一起的多余行（只留最贴刀路的一行）。"""
     candidates = []
+    on_level = {}
     for edge in rows:
         first, second = edge.verts
         steps = _level_steps(field, first, origin, interval, snap)
         if steps is not None and steps == _level_steps(field, second, origin, interval, snap):
+            on_level.setdefault(steps, []).append(edge)
             continue
         candidates.append(edge)
+    for steps, edges in on_level.items():
+        groups = _rows(edges)
+        if len(groups) < 2:
+            continue
+        target = origin + steps * interval
+        best = min(groups, key=lambda group: sum(
+            abs(field[vert] - target) for edge in group for vert in edge.verts) / len(group))
+        candidates.extend(edge for group in groups if group is not best for edge in group)
     return [edge for row in _rows(candidates) if _row_leaves_quads(row) for edge in row]
 
 
@@ -403,7 +460,9 @@ def _check_level_count(bm, uv_layer, tool_settings, axes, interval):
     """动刀之前先量好：任何一片壳的刀数超限就整个拒绝，不留下切了一半的网格。"""
     islands = uv_islands.collect_selected_islands(bm, uv_layer, tool_settings)
     for axis in axes:
-        field, shells = build_field(islands, uv_layer, AXIS_INDEX[axis])
+        field, shells = build_field(
+            islands, uv_layer, AXIS_INDEX[axis],
+            coincident_twins(bm, [face for island in islands for face in island.selected_faces]))
         for shell in shells:
             values = [field[loop.vert] for index in shell
                       for face in islands[index].selected_faces for loop in face.loops]
@@ -411,10 +470,9 @@ def _check_level_count(bm, uv_layer, tool_settings, axes, interval):
                 raise ValueError("切刀数超过 %d：间隔相对 UV 尺寸太小" % LEVEL_LIMIT)
 
 
-def cut_by_grid(bm, uv_layer, tool_settings, axes, interval, align_to_island,
+def cut_by_grid(bm, uv_layer, tool_settings, axes, interval,
                 dissolve_old, parallel_angle, tolerance):
     """按壳统一的场做等距下刀，返回 (被切的壳数, 新增面数, 溶解的旧边数)。"""
-    snap = interval * SNAP_RATIO
     slope = math.tan(parallel_angle)
     cut_shells = 0
     before = len(bm.faces)
@@ -426,33 +484,37 @@ def cut_by_grid(bm, uv_layer, tool_settings, axes, interval, align_to_island,
         islands = uv_islands.collect_selected_islands(bm, uv_layer, tool_settings)
         if not islands:
             continue
-        field, shells = build_field(islands, uv_layer, axis_index)
+        twins = coincident_twins(bm, [face for island in islands for face in island.selected_faces])
+        field, shells = build_field(islands, uv_layer, axis_index, twins)
         cut_edges = set()
         shell_faces = []
         for shell in shells:
             faces = {face for index in shell for face in islands[index].selected_faces}
-            low = min(field[loop.vert] for face in faces for loop in face.loops)
-            origin = low if align_to_island else 0.0
             verts = list({loop.vert for face in faces for loop in face.loops})
-            levels = _grid_levels([field[vert] for vert in verts], origin, interval, snap)
+            origin, step = _anchored_grid([field[vert] for vert in verts], interval)
+            snap = step * SNAP_RATIO
+            levels = _grid_levels([field[vert] for vert in verts], origin, step, snap)
             if dissolve_old and levels:
                 knots = _landmark_knots(
                     _row_edges(faces, uv_layer, axis_index, tolerance, slope, cut_edges),
                     field, levels)
                 if knots:
+                    values = [field[vert] for vert in verts]
+                    knots.append((min(values), min(values), min(values)))
+                    knots.append((max(values), max(values), max(values)))
                     _warp_field(verts, field, knots)
-                    levels = _grid_levels([field[vert] for vert in verts], origin, interval, snap)
+                    levels = _grid_levels([field[vert] for vert in verts], origin, step, snap)
             for level in levels:
                 _cut_level(faces, field, level, snap, cut_edges)
             if levels:
                 cut_shells += 1
-            shell_faces.append((faces, origin))
+            shell_faces.append((faces, origin, step, snap))
 
-        for faces, origin in shell_faces:
+        for faces, origin, step, snap in shell_faces:
             uv_islands.select_faces(face for face in faces if face.is_valid)
             if dissolve_old:
                 rows = _row_edges(faces, uv_layer, axis_index, tolerance, slope, cut_edges)
-                edges = _replaced_edges(rows, field, origin, interval, snap)
+                edges = _replaced_edges(rows, field, origin, step, snap)
                 if edges:
                     bmesh.ops.dissolve_edges(bm, edges=edges, use_verts=True)
                     dissolved += len(edges)

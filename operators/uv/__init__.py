@@ -5,6 +5,8 @@ from . import mesh_to_uv
 from . import uv_from_mesh
 from . import island_arrange
 from . import uv_cut
+from . import hair_uv_unwrap
+from . import uv_relax_locked_operator
 from . import mesh_uv_sync_live
 from . import uv_transfer
 
@@ -16,6 +18,8 @@ classes = (
     island_arrange.SHIYUME_OT_UVIslandEquidistant,
     island_arrange.SHIYUME_OT_UVIslandSortByHeight,
     uv_cut.SHIYUME_OT_UVCut,
+    hair_uv_unwrap.SHIYUME_OT_HairUVUnwrap,
+    uv_relax_locked_operator.SHIYUME_OT_UVRelaxLocked,
     mesh_uv_sync_live.SHIYUME_OT_MeshUVSyncLive,
     mesh_uv_sync_live.SHIYUME_OT_MeshUVSyncLiveDisable,
 )

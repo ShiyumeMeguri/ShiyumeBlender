@@ -4,6 +4,7 @@ from . import grid_sort
 from . import topology_cut
 from . import cleanup_vgs
 from . import weight_prune
+from . import smooth_weights_for_game
 from . import select_avg_size_half
 from . import vg_smooth_merge
 from . import match_weights_active
@@ -17,6 +18,7 @@ classes = (
     topology_cut.SHIYUME_OT_TopologyCut,
     cleanup_vgs.SHIYUME_OT_CleanupVertexGroups,
     weight_prune.SHIYUME_OT_WeightPrune,
+    smooth_weights_for_game.SHIYUME_OT_SmoothWeightsForGame,
     select_avg_size_half.SHIYUME_OT_SelectAvgSizeHalf,
     vg_smooth_merge.SHIYUME_OT_VGSmoothMerge,
     match_weights_active.SHIYUME_OT_MatchWeightsActive,

@@ -258,15 +258,10 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
     interval: bpy.props.FloatProperty(
         name="间隔",
         description="相邻两刀的距离（UV 单位）",
-        default=0.05,
+        default=0.02,
         min=0.00001,
         soft_max=1.0,
         precision=5,
-    )
-    align_to_island: bpy.props.BoolProperty(
-        name="对齐到孤岛",
-        description="勾选则每片壳从自己的边界起算，不勾选则对齐到 UV 原点的全局网格",
-        default=False,
     )
     fit_bounds: bpy.props.BoolProperty(
         name="按包围盒对位",
@@ -311,7 +306,6 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
         if self.mode == "GRID":
             layout.prop(self, "axis", expand=True)
             layout.prop(self, "interval")
-            layout.prop(self, "align_to_island")
         else:
             layout.prop(self, "fit_bounds")
             layout.prop(self, "swap_reference")
@@ -341,7 +335,7 @@ class SHIYUME_OT_UVCut(bpy.types.Operator):
         for edit_mesh in edit_meshes:
             shells, shell_added, shell_dissolved = cut_by_grid(
                 edit_mesh.bm, edit_mesh.uv_layer, context.tool_settings,
-                AXIS_SETS[self.axis], self.interval, self.align_to_island,
+                AXIS_SETS[self.axis], self.interval,
                 self.dissolve_old, self.parallel_angle, self.tolerance)
             cut_shells += shells
             added += shell_added

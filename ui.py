@@ -59,6 +59,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
             layout.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
             layout.operator("shiyume.weight_prune", icon="WPAINT_HLT")
+            layout.operator("shiyume.smooth_weights_for_game", icon="MOD_SMOOTH")
             layout.operator("shiyume.match_weights_active", icon="VERTEXSEL")
             layout.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
             layout.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
@@ -93,6 +94,8 @@ class SHIYUME_MT_UV(bpy.types.Menu):
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
         layout.separator()
+        layout.operator("shiyume.hair_uv_unwrap", icon="UV_DATA")
+        layout.operator("shiyume.uv_relax_locked", icon="MOD_SMOOTH")
         layout.operator("shiyume.uv_cut", icon="MOD_ARRAY")
 
 
@@ -179,6 +182,7 @@ class SHIYUME_PT_Mesh(bpy.types.Panel):
         col.label(text="顶点组/权重")
         col.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
         col.operator("shiyume.weight_prune", icon="WPAINT_HLT")
+        col.operator("shiyume.smooth_weights_for_game", icon="MOD_SMOOTH")
         col.operator("shiyume.match_weights_active", icon="VERTEXSEL")
         col.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
         col.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
@@ -225,6 +229,8 @@ class SHIYUME_PT_UV(bpy.types.Panel):
         layout.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT")
         layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
         layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
+        layout.operator("shiyume.hair_uv_unwrap", icon="UV_DATA")
+        layout.operator("shiyume.uv_relax_locked", icon="MOD_SMOOTH")
         layout.operator("shiyume.uv_cut", icon="MOD_ARRAY")
 
 
@@ -321,6 +327,8 @@ class SHIYUME_PT_UVEditor(bpy.types.Panel):
 
         col = layout.column(align=True)
         col.label(text="切割")
+        col.operator("shiyume.hair_uv_unwrap", icon="UV_DATA")
+        col.operator("shiyume.uv_relax_locked", icon="MOD_SMOOTH")
         col.operator("shiyume.uv_cut", icon="MOD_ARRAY")
 
         col = layout.column(align=True)
