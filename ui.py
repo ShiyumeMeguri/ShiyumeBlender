@@ -44,6 +44,8 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.separator()
             layout.label(text="头发")
             layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
+            layout.operator("shiyume.hair_curve_bind", icon="CONSTRAINT")
+            layout.operator("shiyume.hair_curve_retarget", icon="CURVE_DATA")
 
             layout.separator()
             layout.label(text="法线贴图烘焙")
@@ -340,6 +342,8 @@ class SHIYUME_PT_Curve(bpy.types.Panel):
         layout = self.layout
         layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
         layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
+        layout.operator("shiyume.hair_curve_bind", icon="CONSTRAINT")
+        layout.operator("shiyume.hair_curve_retarget", icon="CURVE_DATA")
 
 
 class SHIYUME_PT_Misc(bpy.types.Panel):
