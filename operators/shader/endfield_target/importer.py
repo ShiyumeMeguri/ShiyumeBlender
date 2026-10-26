@@ -5,14 +5,13 @@
 """
 
 import functools
-import importlib
 import json
 import os
 import sys
 
 import bpy
 
-ADDON = "RuriRipperImporter"
+PANEL_SUFFIX = ".Host.Blender.material_panel"
 SLOTS_FILE = "ImporterSlots.json"
 STACK_KEY = "ruri_uber_stack"
 PART_KEY = "ruri_uber_part"
@@ -29,9 +28,10 @@ def slots():
 
 
 def _panel():
-    if ADDON not in sys.modules:
-        return None
-    return importlib.import_module(ADDON + ".Host.Blender.material_panel")
+    for name, module in sys.modules.items():
+        if name.endswith(PANEL_SUFFIX) and module is not None:
+            return module
+    return None
 
 
 def available():
