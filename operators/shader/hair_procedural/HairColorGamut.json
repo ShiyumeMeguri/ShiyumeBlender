@@ -1,0 +1,212 @@
+{
+  "Source": "31 reference hair base maps",
+  "HueBins": [
+    {
+      "Hue": 7.5,
+      "Count": 93124,
+      "Observed": true,
+      "LightnessLow": 0.2312,
+      "LightnessHigh": 0.821,
+      "ChromaHigh": 0.1449
+    },
+    {
+      "Hue": 22.5,
+      "Count": 197610,
+      "Observed": true,
+      "LightnessLow": 0.3675,
+      "LightnessHigh": 0.808,
+      "ChromaHigh": 0.1448
+    },
+    {
+      "Hue": 37.5,
+      "Count": 127966,
+      "Observed": true,
+      "LightnessLow": 0.4273,
+      "LightnessHigh": 0.8377,
+      "ChromaHigh": 0.0776
+    },
+    {
+      "Hue": 52.5,
+      "Count": 113823,
+      "Observed": true,
+      "LightnessLow": 0.4296,
+      "LightnessHigh": 0.8347,
+      "ChromaHigh": 0.0712
+    },
+    {
+      "Hue": 67.5,
+      "Count": 145112,
+      "Observed": true,
+      "LightnessLow": 0.4482,
+      "LightnessHigh": 0.8117,
+      "ChromaHigh": 0.0582
+    },
+    {
+      "Hue": 82.5,
+      "Count": 59089,
+      "Observed": true,
+      "LightnessLow": 0.4666,
+      "LightnessHigh": 0.8778,
+      "ChromaHigh": 0.0601
+    },
+    {
+      "Hue": 97.5,
+      "Count": 4844,
+      "Observed": true,
+      "LightnessLow": 0.5715,
+      "LightnessHigh": 0.8915,
+      "ChromaHigh": 0.0432
+    },
+    {
+      "Hue": 112.5,
+      "Count": 44516,
+      "Observed": true,
+      "LightnessLow": 0.4731,
+      "LightnessHigh": 0.8881,
+      "ChromaHigh": 0.0803
+    },
+    {
+      "Hue": 127.5,
+      "Count": 59739,
+      "Observed": true,
+      "LightnessLow": 0.4309,
+      "LightnessHigh": 0.871,
+      "ChromaHigh": 0.1126
+    },
+    {
+      "Hue": 142.5,
+      "Count": 46478,
+      "Observed": true,
+      "LightnessLow": 0.438,
+      "LightnessHigh": 0.8006,
+      "ChromaHigh": 0.0938
+    },
+    {
+      "Hue": 157.5,
+      "Count": 11296,
+      "Observed": true,
+      "LightnessLow": 0.3357,
+      "LightnessHigh": 0.8118,
+      "ChromaHigh": 0.046
+    },
+    {
+      "Hue": 172.5,
+      "Count": 14704,
+      "Observed": true,
+      "LightnessLow": 0.339,
+      "LightnessHigh": 0.83,
+      "ChromaHigh": 0.0437
+    },
+    {
+      "Hue": 187.5,
+      "Count": 16325,
+      "Observed": true,
+      "LightnessLow": 0.3617,
+      "LightnessHigh": 0.8444,
+      "ChromaHigh": 0.0514
+    },
+    {
+      "Hue": 202.5,
+      "Count": 34031,
+      "Observed": true,
+      "LightnessLow": 0.2994,
+      "LightnessHigh": 0.7774,
+      "ChromaHigh": 0.103
+    },
+    {
+      "Hue": 217.5,
+      "Count": 166729,
+      "Observed": true,
+      "LightnessLow": 0.2959,
+      "LightnessHigh": 0.8328,
+      "ChromaHigh": 0.1192
+    },
+    {
+      "Hue": 232.5,
+      "Count": 48635,
+      "Observed": true,
+      "LightnessLow": 0.327,
+      "LightnessHigh": 0.8756,
+      "ChromaHigh": 0.1188
+    },
+    {
+      "Hue": 247.5,
+      "Count": 25083,
+      "Observed": true,
+      "LightnessLow": 0.3775,
+      "LightnessHigh": 0.8544,
+      "ChromaHigh": 0.0798
+    },
+    {
+      "Hue": 262.5,
+      "Count": 48344,
+      "Observed": true,
+      "LightnessLow": 0.3151,
+      "LightnessHigh": 0.6985,
+      "ChromaHigh": 0.0808
+    },
+    {
+      "Hue": 277.5,
+      "Count": 13235,
+      "Observed": true,
+      "LightnessLow": 0.315,
+      "LightnessHigh": 0.8338,
+      "ChromaHigh": 0.0921
+    },
+    {
+      "Hue": 292.5,
+      "Count": 65814,
+      "Observed": true,
+      "LightnessLow": 0.4305,
+      "LightnessHigh": 0.8377,
+      "ChromaHigh": 0.0657
+    },
+    {
+      "Hue": 307.5,
+      "Count": 53729,
+      "Observed": true,
+      "LightnessLow": 0.6254,
+      "LightnessHigh": 0.802,
+      "ChromaHigh": 0.0851
+    },
+    {
+      "Hue": 322.5,
+      "Count": 344,
+      "Observed": false,
+      "LightnessLow": 0.5013,
+      "LightnessHigh": 0.8031,
+      "ChromaHigh": 0.0848
+    },
+    {
+      "Hue": 337.5,
+      "Count": 5318,
+      "Observed": true,
+      "LightnessLow": 0.3771,
+      "LightnessHigh": 0.8043,
+      "ChromaHigh": 0.0845
+    },
+    {
+      "Hue": 352.5,
+      "Count": 45427,
+      "Observed": true,
+      "LightnessLow": 0.2974,
+      "LightnessHigh": 0.8239,
+      "ChromaHigh": 0.1318
+    }
+  ],
+  "Neutral": {
+    "LightnessLow": 0.2851,
+    "LightnessHigh": 0.8777
+  },
+  "Variation": {
+    "StrandLightness": 0.0225,
+    "StrandChroma": 0.0519,
+    "FieldSpacing": 130.0,
+    "FieldLightness": 0.0955,
+    "FieldHue": 3.728,
+    "FieldChroma": 0.2587,
+    "CardLightness": 0.0131,
+    "CardHue": 0.9156,
+    "CardChroma": 0.051
+  }
+}

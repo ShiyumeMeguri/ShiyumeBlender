@@ -1,0 +1,20 @@
+def cube(value):
+    return value * value * value
+
+def lmsLongOfOklab(lightness, greenRed, blueYellow):
+    return lightness + 0.3963377774 * greenRed + 0.2158037573 * blueYellow
+
+def lmsMediumOfOklab(lightness, greenRed, blueYellow):
+    return lightness - 0.1055613458 * greenRed - 0.0638541728 * blueYellow
+
+def lmsShortOfOklab(lightness, greenRed, blueYellow):
+    return lightness - 0.0894841775 * greenRed - 1.2914855480 * blueYellow
+
+def linearRedOfOklab(lightness, greenRed, blueYellow):
+    return 4.0767416621 * cube(lmsLongOfOklab(lightness, greenRed, blueYellow)) - 3.3077115913 * cube(lmsMediumOfOklab(lightness, greenRed, blueYellow)) + 0.2309699292 * cube(lmsShortOfOklab(lightness, greenRed, blueYellow))
+
+def linearGreenOfOklab(lightness, greenRed, blueYellow):
+    return -1.2684380046 * cube(lmsLongOfOklab(lightness, greenRed, blueYellow)) + 2.6097574011 * cube(lmsMediumOfOklab(lightness, greenRed, blueYellow)) - 0.3413193965 * cube(lmsShortOfOklab(lightness, greenRed, blueYellow))
+
+def linearBlueOfOklab(lightness, greenRed, blueYellow):
+    return -0.0041960863 * cube(lmsLongOfOklab(lightness, greenRed, blueYellow)) - 0.7034186147 * cube(lmsMediumOfOklab(lightness, greenRed, blueYellow)) + 1.7076147010 * cube(lmsShortOfOklab(lightness, greenRed, blueYellow))

@@ -1,0 +1,5 @@
+paletteGreenRed = paletteChroma * cos(paletteHue * 0.017453292519943295)
+paletteBlueYellow = paletteChroma * sin(paletteHue * 0.017453292519943295)
+paletteRed = clamp(linearRedOfOklab(paletteLightness, paletteGreenRed, paletteBlueYellow), 0.0, 1.0)
+paletteGreen = clamp(linearGreenOfOklab(paletteLightness, paletteGreenRed, paletteBlueYellow), 0.0, 1.0)
+paletteBlue = clamp(linearBlueOfOklab(paletteLightness, paletteGreenRed, paletteBlueYellow), 0.0, 1.0)

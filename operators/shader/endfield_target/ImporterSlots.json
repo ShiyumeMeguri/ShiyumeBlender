@@ -1,0 +1,7 @@
+{
+  "Part": "Hair",
+  "ColorSlot": "_BaseMap",
+  "NormalSlot": "_SplitNormalMap",
+  "NormalChannels": [0, 1],
+  "HighlightChannels": [2, 3]
+}

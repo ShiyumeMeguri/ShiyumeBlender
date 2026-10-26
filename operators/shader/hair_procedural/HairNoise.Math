@@ -1,0 +1,37 @@
+def lattice(indexAcross, indexAlong, octaveKey):
+    return wn3(indexAcross, indexAlong, octaveKey) * 2.0 - 1.0
+
+def quintic(fraction):
+    return fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0)
+
+def quinticSlope(fraction):
+    return 30.0 * fraction * fraction * (1.0 - fraction) * (1.0 - fraction)
+
+def gradientAcross(x, y, octaveKey):
+    return quinticSlope(fract(x)) * ((lattice(floor(x) + 1.0, floor(y), octaveKey) - lattice(floor(x), floor(y), octaveKey)) * (1.0 - quintic(fract(y))) + (lattice(floor(x) + 1.0, floor(y) + 1.0, octaveKey) - lattice(floor(x), floor(y) + 1.0, octaveKey)) * quintic(fract(y)))
+
+def gradientAlong(x, y, octaveKey):
+    return quinticSlope(fract(y)) * ((lattice(floor(x), floor(y) + 1.0, octaveKey) - lattice(floor(x), floor(y), octaveKey)) * (1.0 - quintic(fract(x))) + (lattice(floor(x) + 1.0, floor(y) + 1.0, octaveKey) - lattice(floor(x) + 1.0, floor(y), octaveKey)) * quintic(fract(x)))
+
+def heightAcross(coordinateAcross, coordinateAlong, stripKey):
+    return gradientAcross(coordinateAcross * 0.5, coordinateAlong * 0.8, wn2(stripKey, 1000.0)) * (0.6 * 0.5) + gradientAcross(coordinateAcross * 1.0, coordinateAlong * 1.0, wn2(stripKey, 1001.0)) * (1.0 * 1.0) + gradientAcross(coordinateAcross * 2.1, coordinateAlong * 1.2, wn2(stripKey, 1002.0)) * (0.5 * 2.1)
+
+def heightAlong(coordinateAcross, coordinateAlong, stripKey):
+    return gradientAlong(coordinateAcross * 0.5, coordinateAlong * 0.8, wn2(stripKey, 1000.0)) * (0.6 * 0.8) + gradientAlong(coordinateAcross * 1.0, coordinateAlong * 1.0, wn2(stripKey, 1001.0)) * (1.0 * 1.0) + gradientAlong(coordinateAcross * 2.1, coordinateAlong * 1.2, wn2(stripKey, 1002.0)) * (0.5 * 1.2)
+
+def gaussian(uniform):
+    return sqrt(-2.0 * ln(max(uniform, 0.000000000001))) * cos(6.283185307179586 * wn2(uniform, 0.37))
+
+def cornerNoise(cellX, cellY, cellZ, fieldKey):
+    return madd(wn3(cellX + cellZ * 64.0, cellY, fieldKey), 3.4641016151377544, -1.7320508075688772)
+
+def smoothNoise(x, y, z, fieldKey):
+    cellX = floor(x)
+    cellY = floor(y)
+    cellZ = floor(z)
+    weightX = quintic(fract(x))
+    weightY = quintic(fract(y))
+    weightZ = quintic(fract(z))
+    lowPlane = mix(mix(cornerNoise(cellX, cellY, cellZ, fieldKey), cornerNoise(cellX + 1.0, cellY, cellZ, fieldKey), weightX), mix(cornerNoise(cellX, cellY + 1.0, cellZ, fieldKey), cornerNoise(cellX + 1.0, cellY + 1.0, cellZ, fieldKey), weightX), weightY)
+    highPlane = mix(mix(cornerNoise(cellX, cellY, cellZ + 1.0, fieldKey), cornerNoise(cellX + 1.0, cellY, cellZ + 1.0, fieldKey), weightX), mix(cornerNoise(cellX, cellY + 1.0, cellZ + 1.0, fieldKey), cornerNoise(cellX + 1.0, cellY + 1.0, cellZ + 1.0, fieldKey), weightX), weightY)
+    return mix(lowPlane, highPlane, weightZ)

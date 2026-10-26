@@ -1,0 +1,27 @@
+{
+  "Name": "ShiyumeHighlightPreviewGeometry",
+  "TreeType": "GeometryNodeTree",
+  "Interface": [
+    {"Name": "Geometry", "InOut": "INPUT", "SocketType": "NodeSocketGeometry"},
+    {"Name": "Ellipsoid", "InOut": "INPUT", "SocketType": "NodeSocketObject"},
+    {"Name": "Geometry", "InOut": "OUTPUT", "SocketType": "NodeSocketGeometry"}
+  ],
+  "Nodes": [
+    {"Name": "Input", "Type": "NodeGroupInput", "Location": [-700, 0]},
+    {"Name": "Output", "Type": "NodeGroupOutput", "Location": [500, 0]},
+    {"Name": "EllipsoidInfo", "Type": "GeometryNodeObjectInfo", "Location": [-400, 200], "Properties": {"transform_space": "RELATIVE"}},
+    {"Name": "SurfaceNormal", "Type": "GeometryNodeInputNormal", "Location": [-400, 0]},
+    {"Name": "SurfacePosition", "Type": "GeometryNodeInputPosition", "Location": [-400, -150]},
+    {"Name": "Nearest", "Type": "GeometryNodeSampleNearestSurface", "Location": [-100, 100], "Properties": {"data_type": "FLOAT_VECTOR"}},
+    {"Name": "Store", "Type": "GeometryNodeStoreNamedAttribute", "Location": [200, 0], "Properties": {"data_type": "FLOAT_VECTOR", "domain": "POINT"}}
+  ],
+  "Links": [
+    ["Input", "Ellipsoid", "EllipsoidInfo", "Object"],
+    ["EllipsoidInfo", "Geometry", "Nearest", "Mesh"],
+    ["SurfaceNormal", "Normal", "Nearest", "Value"],
+    ["SurfacePosition", "Position", "Nearest", "Sample Position"],
+    ["Input", "Geometry", "Store", "Geometry"],
+    ["Nearest", "Value", "Store", "Value"],
+    ["Store", "Geometry", "Output", "Geometry"]
+  ]
+}

@@ -1,0 +1,147 @@
+def cubeRoot(value):
+    return pow(max(value, 0.0), 0.3333333333333333)
+
+def coneLong(red, green, blue):
+    return cubeRoot(0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue)
+
+def coneMedium(red, green, blue):
+    return cubeRoot(0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue)
+
+def coneShort(red, green, blue):
+    return cubeRoot(0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue)
+
+def oklabLightness(red, green, blue):
+    return 0.2104542553 * coneLong(red, green, blue) + 0.7936177850 * coneMedium(red, green, blue) - 0.0040720468 * coneShort(red, green, blue)
+
+def oklabGreenRed(red, green, blue):
+    return 1.9779984951 * coneLong(red, green, blue) - 2.4285922050 * coneMedium(red, green, blue) + 0.4505937099 * coneShort(red, green, blue)
+
+def oklabBlueYellow(red, green, blue):
+    return 0.0259040371 * coneLong(red, green, blue) + 0.7827717662 * coneMedium(red, green, blue) - 0.8086757660 * coneShort(red, green, blue)
+
+def oklabChroma(red, green, blue):
+    return hypot(oklabGreenRed(red, green, blue), oklabBlueYellow(red, green, blue))
+
+def oklabHueTurns(red, green, blue):
+    return fract(atan2(oklabBlueYellow(red, green, blue), oklabGreenRed(red, green, blue)) * 0.15915494309189535)
+
+def gamutChromaMapped(chroma, huePosition):
+    limit = gamutChromaHigh(huePosition)
+    allowance = max(Overshoot * limit, 0.000000001)
+    return select(chroma > limit, limit + allowance * tanh((chroma - limit) / allowance), chroma)
+
+def gamutLightnessMapped(lightness, mappedChroma, huePosition):
+    weight = smoothstep(mappedChroma / max(gamutChromaHigh(huePosition), 0.000000001))
+    low = NeutralLightnessLow + (gamutLightnessLow(huePosition) - NeutralLightnessLow) * weight
+    high = NeutralLightnessHigh + (gamutLightnessHigh(huePosition) - NeutralLightnessHigh) * weight
+    allowance = max(Overshoot * (high - low), 0.000000001)
+    upper = select(lightness > high, high + allowance * tanh((lightness - high) / allowance), lightness)
+    return select(upper < low, low - allowance * tanh((low - upper) / allowance), upper)
+
+def gamutBlend(value, mapped):
+    return value + (mapped - value) * gamutStrength
+
+def mappedLightness(red, green, blue):
+    lightness = oklabLightness(red, green, blue)
+    return gamutBlend(lightness, gamutLightnessMapped(lightness, gamutChromaMapped(oklabChroma(red, green, blue), oklabHueTurns(red, green, blue)), oklabHueTurns(red, green, blue)))
+
+def mappedChroma(red, green, blue):
+    return gamutBlend(oklabChroma(red, green, blue), gamutChromaMapped(oklabChroma(red, green, blue), oklabHueTurns(red, green, blue)))
+
+def mappedGreenRed(red, green, blue):
+    return mappedChroma(red, green, blue) * cos(atan2(oklabBlueYellow(red, green, blue), oklabGreenRed(red, green, blue)))
+
+def mappedBlueYellow(red, green, blue):
+    return mappedChroma(red, green, blue) * sin(atan2(oklabBlueYellow(red, green, blue), oklabGreenRed(red, green, blue)))
+
+def srgbEncode(value):
+    return select(clamp(value, 0.0, 1.0) < 0.0031308, clamp(value, 0.0, 1.0) * 12.92, 1.055 * pow(clamp(value, 0.0, 1.0), 0.4166666666666667) - 0.055)
+
+def srgbDecode(value):
+    return select(value < 0.04045, value / 12.92, pow((value + 0.055) / 1.055, 2.4))
+
+referenceScale = pow(ReferenceMillimetresPerUnit, 1.0 - density)
+widthMillimetres = uvWidth * referenceScale * pow(meanWidth / uvWidth, density)
+lengthMillimetres = uvLength * referenceScale * pow(pathLength / uvLength, density)
+acrossMillimetres = ((1.0 - density) * acrossUv + density * acrossArc - 0.5) * widthMillimetres
+alongMillimetres = ((1.0 - density) * alongUv + density * alongArc) * lengthMillimetres
+
+stripKey = wn2(round(stripId), wn2(round(objectTag), wn1(seed)))
+
+pitchAcross = pitch * scaleAcross
+pitchAlong = pitch * stretch * scaleAlong
+coordinateAcross = acrossMillimetres / pitchAcross + wn2(stripKey, 101.0) + offsetAcross
+coordinateAlong = alongMillimetres / pitchAlong + wn2(stripKey, 202.0) + offsetAlong
+unit = strength / GradientDeviation
+tiltAcross = -heightAcross(coordinateAcross, coordinateAlong, stripKey) * unit
+tiltAlong = -heightAlong(coordinateAcross, coordinateAlong, stripKey) * unit * (pitchAcross / pitchAlong) * flow
+remaining = saturate((1.0 - alongMillimetres / lengthMillimetres) / max(tipFade, 0.000001))
+fade = select(tipFade > 0.0, remaining * remaining * (3.0 - 2.0 * remaining), 1.0)
+fadedAcross = tiltAcross * fade * regular
+fadedAlong = tiltAlong * fade * regular
+tiltX = fadedAcross * frameAcrossX + fadedAlong * frameAlongX
+tiltY = fadedAcross * frameAcrossY + fadedAlong * frameAlongY
+tiltLength = hypot(tiltX, tiltY)
+shrink = select(tiltLength > NormalLengthLimit, NormalLengthLimit / max(tiltLength, 0.000000000001), 1.0)
+normalX = tiltX * shrink
+normalY = tiltY * shrink
+normalZ = sqrt(max(1.0 - normalX * normalX - normalY * normalY, 0.0))
+normalRed = normalX * 0.5 + 0.5
+normalGreen = select(directX > 0.5, -normalY, normalY) * 0.5 + 0.5
+normalBlue = normalZ * 0.5 + 0.5
+
+tipRedUsed = select(useTip > 0.5, tipRed, rootRed)
+tipGreenUsed = select(useTip > 0.5, tipGreen, rootGreen)
+tipBlueUsed = select(useTip > 0.5, tipBlue, rootBlue)
+rootLightness = mappedLightness(rootRed, rootGreen, rootBlue)
+rootGreenRed = mappedGreenRed(rootRed, rootGreen, rootBlue)
+rootBlueYellow = mappedBlueYellow(rootRed, rootGreen, rootBlue)
+progress = smoothstep((alongMillimetres / lengthMillimetres - gradientCenter) / max(gradientWidth, 0.0001) + 0.5)
+blendLightness = rootLightness + (mappedLightness(tipRedUsed, tipGreenUsed, tipBlueUsed) - rootLightness) * progress
+blendGreenRed = rootGreenRed + (mappedGreenRed(tipRedUsed, tipGreenUsed, tipBlueUsed) - rootGreenRed) * progress
+blendBlueYellow = rootBlueYellow + (mappedBlueYellow(tipRedUsed, tipGreenUsed, tipBlueUsed) - rootBlueYellow) * progress
+baseChroma = hypot(blendGreenRed, blendBlueYellow)
+baseHueRaw = atan2(blendBlueYellow, blendGreenRed) * 57.29577951308232
+baseHue = baseHueRaw + 360.0 * (baseHueRaw < 0.0)
+
+singleFactor = 1.0 - singleColor
+fieldScale = fieldVariation * singleFactor
+cardScale = cardVariation * singleFactor
+fieldX = positionX / FieldSpacing
+fieldY = positionY / FieldSpacing
+fieldZ = positionZ / FieldSpacing
+fieldLightnessOffset = smoothNoise(fieldX, fieldY, fieldZ, wn2(seed, 601.0)) * FieldLightness * fieldScale
+fieldHueOffset = smoothNoise(fieldX, fieldY, fieldZ, wn2(seed, 602.0)) * FieldHue * fieldScale
+fieldChromaOffset = smoothNoise(fieldX, fieldY, fieldZ, wn2(seed, 603.0)) * FieldChroma * fieldScale
+
+cardLightness = blendLightness + fieldLightnessOffset + gaussian(wn2(stripKey, 401.0)) * CardLightness * cardScale
+cardHue = baseHue + fieldHueOffset + gaussian(wn2(stripKey, 402.0)) * CardHue * cardScale
+cardChroma = baseChroma * (1.0 + fieldChromaOffset + gaussian(wn2(stripKey, 403.0)) * CardChroma * cardScale)
+
+bandPitch = strandWidth / ReferenceResolution * ReferenceMillimetresPerUnit
+bandCell = floor(acrossMillimetres / bandPitch + wn2(stripKey, 501.0) * 64.0)
+bandNoise = clamp(gaussian(wn3(bandCell, stripKey, 502.0)), -StrandBound, StrandBound)
+strandLightness = cardLightness + bandNoise * StrandLightness * strandVariation
+strandChroma = max(cardChroma * (1.0 + bandNoise * StrandChroma * strandVariation), 0.0)
+
+huePosition = fract(cardHue / 360.0)
+finalChromaMapped = gamutChromaMapped(strandChroma, huePosition)
+finalLightness = gamutBlend(strandLightness, gamutLightnessMapped(strandLightness, finalChromaMapped, huePosition))
+finalChroma = gamutBlend(strandChroma, finalChromaMapped)
+
+hueRadians = cardHue * 0.017453292519943295
+finalGreenRed = finalChroma * cos(hueRadians)
+finalBlueYellow = finalChroma * sin(hueRadians)
+linearRed = linearRedOfOklab(finalLightness, finalGreenRed, finalBlueYellow)
+linearGreen = linearGreenOfOklab(finalLightness, finalGreenRed, finalBlueYellow)
+linearBlue = linearBlueOfOklab(finalLightness, finalGreenRed, finalBlueYellow)
+colorRed = srgbEncode(linearRed)
+colorGreen = srgbEncode(linearGreen)
+colorBlue = srgbEncode(linearBlue)
+
+shownRed = select(showNormal > 0.5, normalRed, colorRed)
+shownGreen = select(showNormal > 0.5, normalGreen, colorGreen)
+shownBlue = select(showNormal > 0.5, normalBlue, colorBlue)
+displayRed = srgbDecode(shownRed)
+displayGreen = srgbDecode(shownGreen)
+displayBlue = srgbDecode(shownBlue)

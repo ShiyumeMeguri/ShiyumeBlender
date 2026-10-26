@@ -46,6 +46,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
             layout.operator("shiyume.hair_curve_bind", icon="CONSTRAINT")
             layout.operator("shiyume.hair_curve_retarget", icon="CURVE_DATA")
+            layout.operator("shiyume.hair_preview_start", icon="NORMALS_FACE")
 
             layout.separator()
             layout.label(text="法线贴图烘焙")
@@ -65,6 +66,7 @@ class SHIYUME_MT_Main(bpy.types.Menu):
             layout.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
             layout.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
             layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
+            layout.operator("shiyume.hair_preview_local", icon="NORMALS_FACE")
             layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
 
         elif mode == "EDIT_ARMATURE":
@@ -115,198 +117,8 @@ def menu_func_mesh_add(self, context):
 
 
 # ---------------------------------------------------------------------------
-# Sidebar panel (View3D > N > Shiyume)
+# UV editor sidebar (Image Editor > N > Shiyume)
 # ---------------------------------------------------------------------------
-
-class SHIYUME_PT_Sidebar(bpy.types.Panel):
-    """Main Shiyume sidebar panel exposing every operator categorised."""
-    bl_label = "Shiyume Tools"
-    bl_idname = "SHIYUME_PT_Sidebar"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text=f"Mode: {context.mode}", icon='OPTIONS')
-
-
-class SHIYUME_PT_Animation(bpy.types.Panel):
-    bl_label = "动画"
-    bl_idname = "SHIYUME_PT_Animation"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.auto_bone_orientation", icon="CONSTRAINT_BONE")
-        layout.operator("shiyume.armature_to_edge_mesh", icon="OUTLINER_OB_ARMATURE")
-        layout.separator()
-        layout.operator("shiyume.fix_all_anim_issues", icon="AUTO")
-        layout.operator("shiyume.animation_offset", icon="ACTION")
-        layout.separator()
-        layout.operator("shiyume.cleanup_bake_frames", icon="X")
-        layout.operator("shiyume.cleanup_bone_loc_scale", icon="GROUP_BONE")
-        layout.operator("shiyume.fix_invalid_anim_paths", icon="LIBRARY_DATA_BROKEN")
-        layout.operator("shiyume.clean_bone_collections", icon="OUTLINER_OB_ARMATURE")
-
-
-class SHIYUME_PT_Mesh(bpy.types.Panel):
-    bl_label = "网格"
-    bl_idname = "SHIYUME_PT_Mesh"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-
-        col = layout.column(align=True)
-        col.label(text="选择/布局")
-        col.operator("shiyume.aabb_select", icon="RESTRICT_SELECT_OFF")
-        col.operator("shiyume.select_avg_size_half", icon="ZOOM_OUT")
-        col.operator("shiyume.grid_sort", icon="GRID")
-
-        col = layout.column(align=True)
-        col.label(text="拓扑/剪切")
-        col.operator("shiyume.topology_cut", icon="MESH_GRID")
-        col.operator("shiyume.lossless_mirror", icon="MOD_MIRROR")
-        col.operator("shiyume.select_island_seam", icon="SELECT_SUBTRACT")
-
-        col = layout.column(align=True)
-        col.label(text="顶点组/权重")
-        col.operator("shiyume.cleanup_vgs", icon="GROUP_VERTEX")
-        col.operator("shiyume.weight_prune", icon="WPAINT_HLT")
-        col.operator("shiyume.smooth_weights_for_game", icon="MOD_SMOOTH")
-        col.operator("shiyume.match_weights_active", icon="VERTEXSEL")
-        col.operator("shiyume.swap_vertex_weights", icon="ARROW_LEFTRIGHT")
-        col.operator("shiyume.copy_vertex_weights", icon="PASTEDOWN")
-        col.operator("shiyume.vg_smooth_merge", icon="AUTOMERGE_ON")
-
-
-class SHIYUME_PT_Shader(bpy.types.Panel):
-    bl_label = "着色 / 烘焙"
-    bl_idname = "SHIYUME_PT_Shader"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.normal_expansion", icon="MOD_NORMALEDIT")
-
-        col = layout.column(align=True)
-        col.label(text="法线贴图烘焙")
-        col.operator("shiyume.normal_map_to_mesh", icon="IMPORT")
-        col.operator("shiyume.mesh_to_normal_map", icon="EXPORT")
-
-        layout.operator("shiyume.vertex_color_rgba", icon="VPAINT_HLT")
-
-
-class SHIYUME_PT_UV(bpy.types.Panel):
-    bl_label = "UV"
-    bl_idname = "SHIYUME_PT_UV"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.uv_pack_lock_group", icon="PACKAGE")
-        layout.operator("shiyume.mesh_uv_sync", icon="UV_DATA")
-        layout.operator("shiyume.mesh_uv_sync_live", icon="UV_SYNC_SELECT")
-        layout.operator("shiyume.mesh_uv_sync_live_disable", icon="X")
-        layout.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE")
-        layout.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT")
-        layout.operator("shiyume.uv_island_equidistant", icon="ALIGN_CENTER")
-        layout.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
-        layout.operator("shiyume.hair_uv_unwrap", icon="UV_DATA")
-        layout.operator("shiyume.uv_relax_locked", icon="MOD_SMOOTH")
-        layout.operator("shiyume.uv_cut", icon="MOD_ARRAY")
-
-
-class SHIYUME_PT_UVTransfer(bpy.types.Panel):
-    """UV 重定向：源 UV 上的贴图 → 目标 UV 的排布。"""
-    bl_label = "UV 重定向"
-    bl_idname = "SHIYUME_PT_UVTransfer"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.mode == 'OBJECT'
-
-    def draw(self, context):
-        layout = self.layout
-        settings = context.scene.shiyume_uv_transfer
-        obj = context.active_object
-
-        if obj is None or obj.type != 'MESH':
-            layout.label(text="请激活一个网格物体", icon='INFO')
-            return
-
-        col = layout.column(align=True)
-        col.label(text="在网格上编辑 UV 布局")
-        col.operator("shiyume.mesh_to_uv", icon="MESH_UVSPHERE", text="展平为网格")
-        col.operator("shiyume.uv_from_mesh", icon="UV_SYNC_SELECT", text="网格坐标写回UV")
-
-        layout.separator()
-
-        layout.prop(settings, "target_space", text="")
-
-        col = layout.column(align=True)
-        col.prop_search(settings, "source_uv", obj.data, "uv_layers",
-                        text="源 UV", icon='UV_DATA')
-        target_text = ("目标 UV" if settings.target_space == 'UV_LAYER'
-                       else "投影写入")
-        row = col.row(align=True)
-        row.enabled = (settings.target_space == 'UV_LAYER'
-                       or settings.apply_to_object)
-        row.prop_search(settings, "target_uv", obj.data, "uv_layers",
-                        text=target_text, icon='UV_ISLANDSEL')
-
-        layout.prop(settings, "color_source", expand=True)
-        layout.prop(settings, "merge_material")
-        resample = settings.color_source == 'IMAGE'
-        if resample:
-            layout.row().prop(settings, "write_mode", expand=True)
-
-        col = layout.column(align=True)
-        row = col.row(align=True)
-        row.enabled = not (resample and settings.write_mode == 'EXISTING')
-        row.prop(settings, "resolution")
-        col.prop(settings, "margin")
-        if resample:
-            col.prop(settings, "supersample")
-            col = layout.column(align=True)
-            col.prop(settings, "normal_labels")
-            col.prop(settings, "normal_convention", text="")
-        else:
-            col.prop(settings, "bake_type")
-            col.prop(settings, "bake_samples")
-
-        layout.prop(settings, "apply_to_object")
-
-        col = layout.column(align=True)
-        col.prop(settings, "save_to_disk")
-        sub = col.column(align=True)
-        sub.enabled = settings.save_to_disk and not (resample and settings.write_mode == 'EXISTING')
-        sub.prop(settings, "output_dir", text="")
-
-        layout.operator("shiyume.uv_transfer", icon='TEXTURE')
-
 
 class SHIYUME_PT_UVEditor(bpy.types.Panel):
     """UV 编辑器侧栏。切割是在 UV 平面上下刀的，工具就摆在下刀的地方。"""
@@ -337,48 +149,8 @@ class SHIYUME_PT_UVEditor(bpy.types.Panel):
         col.operator("shiyume.uv_island_sort_height", icon="SORTSIZE")
 
 
-class SHIYUME_PT_Curve(bpy.types.Panel):
-    bl_label = "曲线"
-    bl_idname = "SHIYUME_PT_Curve"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.curve_smooth_fix", icon="CURVE_DATA")
-        layout.operator("shiyume.hair_to_path", icon="OUTLINER_OB_CURVES")
-        layout.operator("shiyume.hair_curve_bind", icon="CONSTRAINT")
-        layout.operator("shiyume.hair_curve_retarget", icon="CURVE_DATA")
-
-
-class SHIYUME_PT_Misc(bpy.types.Panel):
-    bl_label = "杂项"
-    bl_idname = "SHIYUME_PT_Misc"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Shiyume'
-    bl_parent_id = "SHIYUME_PT_Sidebar"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("shiyume.clear_empty", icon="X")
-        layout.operator("shiyume.sort_roots_x", icon="SORTSIZE")
-
-
 _PANEL_CLASSES = (
-    SHIYUME_PT_Sidebar,
-    SHIYUME_PT_Animation,
-    SHIYUME_PT_Mesh,
-    SHIYUME_PT_Shader,
-    SHIYUME_PT_UV,
-    SHIYUME_PT_UVTransfer,
     SHIYUME_PT_UVEditor,
-    SHIYUME_PT_Curve,
-    SHIYUME_PT_Misc,
 )
 
 

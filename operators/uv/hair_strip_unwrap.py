@@ -148,7 +148,7 @@ def _mean_key(rows, key_of_vertex):
     return sum(keys) / len(keys)
 
 
-def _root_first(rows, key_of_vertex):
+def root_first(rows, key_of_vertex):
     """发根一端排在前面：两端各取三分之一的排，顶点键平均值小的一端是发根。"""
     third = max(1, len(rows) // 3)
     head = _mean_key(rows[:third], key_of_vertex)
@@ -195,7 +195,7 @@ def unwrap(bm, uv_layer, key_of_vertex, selected_only, tool_settings):
     skipped = []
     for faces in islands:
         try:
-            rows = _root_first(strip_rows(faces), key_of_vertex)
+            rows = root_first(strip_rows(faces), key_of_vertex)
         except UnsupportedIsland as error:
             skipped.append((str(error), len(faces)))
             continue

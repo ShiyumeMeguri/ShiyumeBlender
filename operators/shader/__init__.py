@@ -3,6 +3,9 @@ from . import normal_expansion
 from . import normal_map_to_mesh
 from . import mesh_to_normal_map
 from . import vertex_color_rgba
+from . import endfield_highlight
+from . import endfield_target
+from . import hair_procedural
 
 classes = (
     normal_expansion.SHIYUME_OT_NormalExpansion,
@@ -14,7 +17,13 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    endfield_target.register()
+    hair_procedural.register()
+    endfield_highlight.register()
 
 def unregister():
+    endfield_highlight.unregister()
+    hair_procedural.unregister()
+    endfield_target.unregister()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

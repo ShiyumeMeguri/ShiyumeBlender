@@ -9,6 +9,7 @@ bl_info = {
 }
 
 import bpy
+from . import sidebar
 from . import ui
 from .operators import animation, shader, uv, mesh, curve, misc, object_ops
 
@@ -20,6 +21,7 @@ modules = [
     curve,
     misc,
     object_ops,
+    sidebar,
     ui
 ]
 
