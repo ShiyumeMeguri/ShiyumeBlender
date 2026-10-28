@@ -4,6 +4,7 @@ from . import normal_map_to_mesh
 from . import mesh_to_normal_map
 from . import vertex_color_rgba
 from . import endfield_highlight
+from . import endfield_outline
 from . import endfield_target
 from . import hair_procedural
 
@@ -20,8 +21,10 @@ def register():
     endfield_target.register()
     hair_procedural.register()
     endfield_highlight.register()
+    endfield_outline.register()
 
 def unregister():
+    endfield_outline.unregister()
     endfield_highlight.unregister()
     hair_procedural.unregister()
     endfield_target.unregister()

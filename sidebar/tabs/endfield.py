@@ -6,7 +6,7 @@ from ...operators.shader.hair_procedural import layers
 from ..tab import Tab
 
 SECTION = "shiyume_endfield_section"
-Section = namedtuple("Section", ("key", "label", "description", "draw"))
+Section = namedtuple("Section", ("key", "label", "description", "draw", "writes_textures"))
 
 
 def _draw_hair(layout, context):
@@ -63,9 +63,29 @@ def _draw_highlight(layout, context):
     layout.operator("shiyume.endfield_highlight_bake", icon="RENDER_STILL")
 
 
+def _draw_outline(layout, context):
+    options = context.scene.shiyume_endfield_outline
+    layout.label(text="选中要描边的网格物体后烘焙", icon="INFO")
+    layout.prop(options, "source")
+    if options.source == 'ATTRIBUTE':
+        layout.prop(options, "attribute")
+    elif options.source == 'PROXY':
+        layout.prop(options, "proxy")
+    else:
+        layout.prop(options, "weld_distance")
+    layout.prop(options, "layer")
+    layout.operator("shiyume.endfield_outline_bake", icon="NORMALS_VERTEX")
+    row = layout.row(align=True)
+    row.operator("shiyume.endfield_outline_verify", icon="CHECKMARK")
+    row.operator("shiyume.endfield_outline_clear", icon="TRASH")
+    for entry in options.report:
+        layout.label(text=entry.text)
+
+
 SECTIONS = (
-    Section("HAIR", "头发生成", "按发片 UV 程序化生成头发的法线与颜色：实时预览调参数，编辑模式选面做局部层，最后烘焙", _draw_hair),
-    Section("HIGHLIGHT", "高光椭球", "椭球当高模烘焙头发的高光法线，实时预览；只写分离法线贴图的 B、A 通道", _draw_highlight),
+    Section("HAIR", "头发生成", "按发片 UV 程序化生成头发的法线与颜色：实时预览调参数，编辑模式选面做局部层，最后烘焙", _draw_hair, True),
+    Section("HIGHLIGHT", "高光椭球", "椭球当高模烘焙头发的高光法线，实时预览；只写分离法线贴图的 B、A 通道", _draw_highlight, True),
+    Section("OUTLINE", "描边法线", "把平滑法线按每个角的切线框烘焙进 UV2，游戏的反壳描边按它外扩；不写贴图", _draw_outline, False),
 )
 SECTIONS_BY_KEY = {section.key: section for section in SECTIONS}
 
@@ -81,8 +101,10 @@ def _draw_target(layout, context):
 
 def draw(layout, context):
     layout.prop(context.window_manager, SECTION, text="")
-    SECTIONS_BY_KEY[getattr(context.window_manager, SECTION)].draw(layout, context)
-    _draw_target(layout.box(), context)
+    section = SECTIONS_BY_KEY[getattr(context.window_manager, SECTION)]
+    section.draw(layout, context)
+    if section.writes_textures:
+        _draw_target(layout.box(), context)
 
 
 PROPERTIES = (
@@ -90,4 +112,4 @@ PROPERTIES = (
         name="EndField 功能", items=[(section.key, section.label, section.description) for section in SECTIONS], default=SECTIONS[0].key)),
 )
 
-TAB = Tab("endfield", "EndField", "头发的程序化法线与颜色、高光椭球烘焙高光法线；两者写同一张分离法线贴图", draw, PROPERTIES)
+TAB = Tab("endfield", "EndField", "头发的程序化法线与颜色、高光椭球烘焙高光法线，两者写同一张分离法线贴图；描边法线烘焙进网格的 UV2", draw, PROPERTIES)

@@ -71,7 +71,7 @@ def select(triangles, mask):
     return Triangles(*(array[mask] for array in triangles))
 
 
-def _nearest_normals(surface, points):
+def nearest_normals(surface, points):
     """表面上离每个点最近的点的平滑法线：最近三角形上的重心坐标插值顶点法线，不归一化（与几何节点的采样一致）。"""
     found = [surface.tree.find_nearest(point) for point in points.tolist()]
     nearest = np.array([coordinate for item in found for coordinate in item[0]]).reshape(-1, 3)
@@ -128,7 +128,7 @@ def field_of(sources, width, height):
                 tangent = _unit(_blend(triangles.tangent, part_triangle, stacked))
                 sign = triangles.sign[part_triangle, np.argmax(stacked, axis=1)]
                 bitangent = _unit(sign[:, None] * np.cross(normal, tangent))
-                highlight = _unit(_nearest_normals(surface, position))
+                highlight = _unit(nearest_normals(surface, position))
                 values[pixel[part]] = _encode(highlight, tangent, bitangent, normal)
                 covered[pixel[part]] = True
     return Field(covered.reshape(height, width), values.reshape(height, width, 2))
