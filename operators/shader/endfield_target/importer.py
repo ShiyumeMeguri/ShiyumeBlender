@@ -27,7 +27,7 @@ def slots():
         return json.load(stream)
 
 
-def _panel():
+def panel():
     for name, module in sys.modules.items():
         if name.endswith(PANEL_SUFFIX) and module is not None:
             return module
@@ -35,12 +35,12 @@ def _panel():
 
 
 def available():
-    return _panel() is not None
+    return panel() is not None
 
 
 def stack_of(material):
-    panel = _panel()
-    entry = panel.stack_of(material) if panel is not None else None
+    host = panel()
+    entry = host.stack_of(material) if host is not None else None
     return entry["stack"] if entry is not None else None
 
 

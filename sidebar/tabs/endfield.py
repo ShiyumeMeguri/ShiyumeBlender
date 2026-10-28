@@ -63,9 +63,8 @@ def _draw_highlight(layout, context):
     layout.operator("shiyume.endfield_highlight_bake", icon="RENDER_STILL")
 
 
-def _draw_outline(layout, context):
+def _draw_outline_options(layout, context):
     options = context.scene.shiyume_endfield_outline
-    layout.label(text="选中要描边的网格物体后烘焙", icon="INFO")
     layout.prop(options, "source")
     if options.source == 'ATTRIBUTE':
         layout.prop(options, "attribute")
@@ -74,12 +73,29 @@ def _draw_outline(layout, context):
     else:
         layout.prop(options, "weld_distance")
     layout.prop(options, "layer")
+
+
+def _draw_outline_bake(layout, context):
     layout.operator("shiyume.endfield_outline_bake", icon="NORMALS_VERTEX")
+
+
+def _draw_outline_check(layout, context):
     row = layout.row(align=True)
     row.operator("shiyume.endfield_outline_verify", icon="CHECKMARK")
     row.operator("shiyume.endfield_outline_clear", icon="TRASH")
-    for entry in options.report:
+
+
+def _draw_outline_report(layout, context):
+    for entry in context.scene.shiyume_endfield_outline.report:
         layout.label(text=entry.text)
+
+
+def _draw_outline(layout, context):
+    layout.label(text="选中要描边的网格物体后烘焙", icon="INFO")
+    _draw_outline_options(layout, context)
+    _draw_outline_bake(layout, context)
+    _draw_outline_check(layout, context)
+    _draw_outline_report(layout, context)
 
 
 SECTIONS = (
@@ -97,6 +113,36 @@ def _draw_target(layout, context):
     layout.prop(options, "output_dir")
     layout.prop(options, "resolution")
     layout.prop(options, "variant")
+
+
+Placement = namedtuple("Placement", ("slot", "key", "title", "draw"))
+
+
+def _quick_outline(layout, context, place):
+    layout.label(text="选中要描边的网格物体后点一下", icon="INFO")
+    _draw_outline_bake(layout, context)
+    _draw_outline_report(layout, context)
+
+
+def _outline_options(layout, context, place):
+    _draw_outline_options(layout, context)
+    _draw_outline_check(layout, context)
+
+
+def _with_target(draw):
+    def drawn(layout, context, place):
+        draw(layout, context)
+        _draw_target(layout.box(), context)
+    return drawn
+
+
+# 工具插进导入器生成的材质面板:slot 是材质布局数据里的槽位名(挨着这个工具写的那个参数),title 非空就是默认折叠的分组。
+PLACEMENTS = (
+    Placement("OutlineNormal", "Bake", "", _quick_outline),
+    Placement("OutlineNormal", "Options", "描边法线选项", _outline_options),
+    Placement("BaseMap", "HairGeneration", "头发生成（法线与颜色）", _with_target(_draw_hair)),
+    Placement("SplitNormalMap", "HighlightEllipsoid", "高光椭球（烘焙高光法线）", _with_target(_draw_highlight)),
+)
 
 
 def draw(layout, context):

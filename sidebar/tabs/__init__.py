@@ -18,3 +18,4 @@ TABS = (
     misc.TAB,
 )
 BY_KEY = {tab.key: tab for tab in TABS}
+PLACEMENTS = endfield.PLACEMENTS
