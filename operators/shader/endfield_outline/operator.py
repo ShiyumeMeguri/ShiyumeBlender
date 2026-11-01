@@ -1,7 +1,7 @@
 """描边平滑法线的算子：烘焙、核对、清除。设置在 Scene 的 shiyume_endfield_outline 上，侧栏 EndField 标签里点。
 
-游戏的反壳描边把 UV2 当切线空间平滑法线（XY，Z 现算）来外扩。游戏网格里的 UV2 是工具烘焙进去的，不是手做的；自己的网格没有它，
-描边只能沿表面法线外扩，硬边处会裂开。烘焙把平滑法线按每个角自己的切线框写进 UV2，导入器的描边读到的就和游戏的网格一样。
+反壳描边把 OutlineNormal 这一层 UV 当切线空间平滑法线（XY，Z 现算）来外扩。游戏网格里烘好的平滑法线由导入器搬进这一层；自己的网格没有它，
+描边只能沿表面法线外扩，硬边处会裂开。烘焙把平滑法线按每个角自己的切线框写进这一层，导入器的描边读到的就和游戏的网格一样。
 """
 
 import bpy
@@ -34,7 +34,7 @@ def _outcome_line(obj, outcome):
 
 
 class SHIYUME_OT_EndfieldOutlineBake(bpy.types.Operator):
-    """把平滑法线按每个角自己的切线框烘焙进 UV 层（默认 UV2）：XY 存进去，Z 由着色器现算。选中的网格物体都烘，已有这一层就覆盖；
+    """把平滑法线按每个角自己的切线框烘焙进 UV 层（默认 OutlineNormal）：XY 存进去，Z 由着色器现算。选中的网格物体都烘，已有这一层就覆盖；
     渲染用的 UV 层、网格形状、法线都不动"""
     bl_idname = "shiyume.endfield_outline_bake"
     bl_label = "烘焙描边平滑法线"

@@ -3,7 +3,7 @@
 import bpy
 
 SOURCES = (
-    ('FACES', "面法线（游戏算法）", "同一位置各面的几何法线按所在角的夹角加权求和，与游戏烘焙进 UV2 的平滑法线一致；忽略自定义法线和平滑标记"),
+    ('FACES', "面法线（游戏算法）", "同一位置各面的几何法线按所在角的夹角加权求和，与游戏网格里烘好的平滑法线一致；忽略自定义法线和平滑标记"),
     ('ATTRIBUTE', "已有属性", "取网格上现成的向量属性（物体空间的单位向量）当平滑法线，例如手工做好的 smoothnormalWS"),
     ('PROXY', "代理物体", "取代理网格上离每个角最近的点的平滑法线：复制一份网格，随便雕它或改它的法线，当高模来烘焙"),
 )
@@ -25,8 +25,8 @@ class SHIYUME_PG_EndfieldOutline(bpy.types.PropertyGroup):
                                      description="来源是代理物体时，每个角取它表面上离自己最近的点的平滑法线")
     weld_distance: bpy.props.FloatProperty(name="焊接距离", default=1e-5, min=0.0, soft_max=1e-3, precision=6, unit='LENGTH',
                                            description="面法线求和时，距离不超过它的顶点算同一个位置；0 = 只按顶点下标")
-    layer: bpy.props.StringProperty(name="写入的 UV 层", default="UV2",
-                                    description="平滑法线的切线空间 XY 写进这一层（没有就新建）；游戏的描边读的是 UV2")
+    layer: bpy.props.StringProperty(name="写入的 UV 层", default="OutlineNormal",
+                                    description="平滑法线的切线空间 XY 写进这一层（没有就新建）；导入器的描边读的是 OutlineNormal")
     report: bpy.props.CollectionProperty(type=SHIYUME_PG_OutlineReport)
 
 
