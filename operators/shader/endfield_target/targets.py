@@ -1,8 +1,8 @@
 """贴图落点：生成的法线与颜色写进哪几张图、挂到哪张材质上。
 
 装了 RuriRipperImporter：新建（或更新）一张按它的头发着色栈编出来的材质球，法线进它的分离法线贴图的 R、G，颜色进它的 BaseMap；
-文件里有导入的头发材质就拿它当模板，两张图都先拷模板原来的图、参数也抄它的；一张都没有就取栈声明的游戏缺省参数，两张图的初值是纯平的；
-再只写生成范围，范围外与别的通道原样不动；材质换到发片用的槽上，原来的材质保留。
+文件里有导入的头发材质就拿它当模板，两张图都先拷模板原来的图、参数也抄它的；一张都没有就抄本机声明的头发模板（见 importer）的参数与公共贴图，
+两张图的初值是纯平的；再只写生成范围，范围外与别的通道原样不动；材质换到发片用的槽上，原来的材质保留。
 没装：每张材质一对锚定贴图（材质名_Normal.png、材质名_BaseColor.png），接到 Principled BSDF 上。
 锚定名只由材质名决定（去掉 Blender 的 .001 重名后缀），重启后按名字找回，不依赖任何会丢的状态。
 """
@@ -46,12 +46,20 @@ class TargetError(Exception):
     pass
 
 
-def texture_stem(shader, texture_set, slot, variant):
+def _naming():
     try:
-        naming = importlib.import_module(NAMING_MODULE)
+        return importlib.import_module(NAMING_MODULE)
     except ImportError as error:
         raise TargetError("贴图文件名读 RuriBridge 的 Kernel/TextureNaming.json：先装好 RuriBridge（%s）" % error)
-    return naming.stem(shader, texture_set, slot, variant)
+
+
+def texture_stem(shader, texture_set, slot, variant):
+    return _naming().stem(shader, texture_set, slot, variant)
+
+
+def per_model_slots(shader):
+    """贴图归角色自己的槽：命名档案里写了后缀的槽每套贴图各画各的，没写的（色阶图、线条图这些）是公共图。"""
+    return set(_naming().profile_of(shader)["Suffixes"])
 
 
 def normalized(material):
@@ -214,7 +222,9 @@ class ImporterTarget:
         self.color_slot = names["ColorSlot"]
         self.normal_channels = tuple(names["NormalChannels"])
         self.highlight_channels = tuple(names["HighlightChannels"])
+        self.directory = bpy.path.abspath(settings.directory)
         shader = stack.MATERIAL_NAME
+        self.per_model_slots = per_model_slots(shader)
         variant = "_".join(part for part in (_variant_part(settings).lstrip("_"), GENERATED_SUFFIX.lstrip("_")) if part)
         self.normal = Anchored(texture_stem(shader, self.base, self.normal_slot, variant), settings.directory, DATA_COLORSPACE,
                                settings.resolution, importer.template_image(template, self.normal_slot), FLAT_SPLIT_NORMAL)
@@ -223,6 +233,11 @@ class ImporterTarget:
             if settings.color else None
         if not bpy.data.filepath:
             raise TargetError("先保存 .blend：生成的贴图要存到它旁边的相对目录里")
+        if template is None and bpy.data.materials.get(self.name) is None:
+            try:
+                importer.check_template()
+            except importer.TemplateError as error:
+                raise TargetError(str(error))
 
     def channels(self):
         found = [Channel(KIND_NORMAL, self.normal, self.normal_channels, None)]
@@ -241,9 +256,9 @@ class ImporterTarget:
             images[self.color_slot] = self.color.image
         material = bpy.data.materials.get(self.name)
         if material is None:
-            material = importer.build(self.stack, self.template, self.name, images)
-            messages.append("新建材质 '%s'（照导入器的头发着色栈，参数%s）" % (
-                self.name, "抄自 '%s'" % self.template.name if self.template is not None else "取游戏缺省"))
+            material, notes = importer.build(self.stack, self.template, self.name, images, self.directory, self.per_model_slots)
+            messages.append("新建材质 '%s'（照导入器的头发着色栈）" % self.name)
+            messages.extend(notes)
         else:
             importer.rebind(self.stack, material, images)
             messages.append("更新材质 '%s'" % self.name)

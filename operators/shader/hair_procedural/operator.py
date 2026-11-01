@@ -217,7 +217,7 @@ class SHIYUME_OT_HairPreviewCancel(bpy.types.Operator):
 class SHIYUME_OT_HairPreviewBake(bpy.types.Operator):
     """把所有预览层按各自的参数烘焙进贴图：法线写分离法线贴图的 R、G（B、A 不动），颜色写 BaseMap，别的像素原样保留；
     然后删掉全部预览材质、网格属性与程序节点组。装了 RuriRipperImporter 就按它的头发着色栈新建（或更新）材质球挂上去，原材质保留；
-    文件里有导入的头发材质就抄它的参数，没有就取游戏缺省。没装就写「材质名_Normal.png」「材质名_BaseColor.png」并接到 Principled BSDF"""
+    文件里有导入的头发材质就抄它的参数，没有就抄本机声明的头发模板（presets/ShiyumeBlender/HairTemplate.json）的参数与公共贴图。没装就写「材质名_Normal.png」「材质名_BaseColor.png」并接到 Principled BSDF"""
     bl_idname = "shiyume.hair_preview_bake"
     bl_label = "烘焙并清理"
     bl_options = {'REGISTER', 'UNDO'}
