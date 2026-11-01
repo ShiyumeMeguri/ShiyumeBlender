@@ -14,7 +14,7 @@ from ...uv.uv_transfer import kernel
 from ...uv.uv_transfer import mesh_bind
 
 Surface = namedtuple("Surface", ("tree", "positions", "normals", "triangles"))
-Triangles = namedtuple("Triangles", ("uv", "position", "normal", "tangent", "sign", "slot"))
+Triangles = namedtuple("Triangles", ("uv", "position", "normal", "tangent", "sign", "slot", "polygon"))
 Source = namedtuple("Source", ("triangles", "surface"))
 Field = namedtuple("Field", ("covered", "values"))
 
@@ -31,10 +31,14 @@ def _read(array_owner, name, shape, dtype=np.float64):
 
 
 def surface_of(ellipsoid, obj, depsgraph):
-    """椭球（含细分）搬进头发物体的局部空间后的表面：顶点、Blender 自己算的顶点平滑法线、三角形和最近点查询树。"""
+    """椭球（含细分）搬进头发物体的局部空间后的表面：顶点、Blender 自己算的顶点平滑法线、三角形和最近点查询树。
+    头发物体带镜像（负缩放）时变换是反射，面的绕向跟着翻过来、法线会朝里，所以反射时把面翻回去，法线始终朝外。"""
     mesh = bpy.data.meshes.new_from_object(ellipsoid.evaluated_get(depsgraph), preserve_all_data_layers=False, depsgraph=depsgraph)
     try:
-        mesh.transform(obj.matrix_world.inverted() @ ellipsoid.matrix_world)
+        relative = obj.matrix_world.inverted() @ ellipsoid.matrix_world
+        mesh.transform(relative)
+        if relative.determinant() < 0.0:
+            mesh.flip_normals()
         mesh.calc_loop_triangles()
         positions = _read(mesh.vertices, "co", (len(mesh.vertices), 3))
         normals = _read(mesh.vertex_normals, "vector", (len(mesh.vertices), 3))
@@ -46,7 +50,7 @@ def surface_of(ellipsoid, obj, depsgraph):
 
 
 def triangles_of(obj, depsgraph, uv_name):
-    """头发物体（求值后）的三角形：每个角的 UV、局部位置、法线、切线，以及切线的副切线符号和材质槽下标。"""
+    """头发物体（求值后）的三角形：每个角的 UV、局部位置、法线、切线，以及切线的副切线符号、材质槽下标和所属多边形下标。"""
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     try:
@@ -61,10 +65,11 @@ def triangles_of(obj, depsgraph, uv_name):
         tangents = _read(mesh.loops, "tangent", (loop_count, 3))
         signs = _read(mesh.loops, "bitangent_sign", loop_count)
         slots = _read(mesh.loop_triangles, "material_index", triangle_count, np.int64)
+        polygons = _read(mesh.loop_triangles, "polygon_index", triangle_count, np.int64)
         uv = mesh_bind.read_uv(mesh, uv_name)[loops]
     finally:
         evaluated.to_mesh_clear()
-    return Triangles(uv, positions[vertex_index[loops]], normals[loops], tangents[loops], signs[loops], slots)
+    return Triangles(uv, positions[vertex_index[loops]], normals[loops], tangents[loops], signs[loops], slots, polygons)
 
 
 def select(triangles, mask):

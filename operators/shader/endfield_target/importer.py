@@ -189,11 +189,22 @@ def build(stack, template, name, images, directory, per_model_slots):
     return material, notes
 
 
+def repair_switches(stack, material):
+    """角色自有的、中性图会把画面带歪的贴图槽没绑图，它的使用开关就关掉，返回关掉了哪些开关（槽与开关的对应在 ImporterSlots.json）：
+    头发的 P 图中性是全白，R = 1 让高光的切线全走网格切线，方向听 UV 的；RMOS 中性的遮蔽是 0，整张材质发黑。"""
+    bound = set(material.get(IMAGES_KEY) or {})
+    floats = dict(material.get("ruri_uber_floats") or {})
+    closed = [switch for slot, switch in slots()["SlotSwitches"].items() if slot not in bound and float(floats.get(switch, 0.0)) > 0.5]
+    for switch in closed:
+        stack.panel_write(material, stack.PROPERTIES[switch], 0.0)
+    return closed
+
+
 def rebind(stack, material, images):
     """材质已经存在：把它的贴图槽重新指到这次的图（已经是就不动）。"""
-    bound = material.get(IMAGES_KEY)
+    bound = dict(material.get(IMAGES_KEY) or {})
     for slot, image in images.items():
-        if bound is None or bound.get(slot) is not image:
+        if bound.get(slot) != image:
             stack.panel_write_image(material, {"name": slot}, image)
 
 

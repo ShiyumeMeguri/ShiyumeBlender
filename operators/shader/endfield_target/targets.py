@@ -263,6 +263,9 @@ class ImporterTarget:
             importer.rebind(self.stack, material, images)
             messages.append("更新材质 '%s'" % self.name)
         material[importer.MARKER] = self.base
+        closed = importer.repair_switches(self.stack, material)
+        if closed:
+            messages.append("没有绑角色自己的贴图，已关掉开关 %s" % "、".join(closed))
         replaced = set()
         for binding in bindings:
             slot = binding.obj.material_slots[binding.slot]

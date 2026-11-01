@@ -1,6 +1,7 @@
 """高光椭球的算子：创建、开始与停止实时预览、烘焙。设置在 Scene 的 shiyume_endfield_highlight 上，侧栏 EndField 标签里点。
 
 椭球是头发高光法线的高模：头发每个点的高光法线取椭球上离它最近的点的平滑法线。烘焙把它写进分离法线贴图的 B、A 通道，R、G 不动。
+创建、预览、烘焙之前先自动修好会让高光画错的两处：法线明显朝里的发片翻朝外，没绑角色自己贴图的材质关掉对应开关；头发物体带镜像（负缩放）也算对。
 """
 
 from collections import namedtuple
@@ -16,6 +17,7 @@ from ..endfield_target import targets
 from . import bake
 from . import ellipsoid
 from . import estimate
+from . import orientation
 from . import session
 
 Batch = namedtuple("Batch", ("target", "sources", "bindings"))
@@ -52,6 +54,30 @@ def _world_points(objects, depsgraph):
     return np.concatenate(points)
 
 
+def _repair_hair(operator, context, objects, ellipsoid_object):
+    """让高光能画对：法线明显朝里的发片翻朝外（高光法线只能存在发片正面半球里），没绑角色自己贴图的材质关掉对应开关
+    （P 图开着而没绑图，高光切线全走网格切线）；同一份网格数据与同一张材质只处理一次，改了网格就刷新依赖图。"""
+    meshes = set()
+    materials = set()
+    for obj in objects:
+        if obj.data not in meshes:
+            meshes.add(obj.data)
+            context.view_layer.update()
+            result = orientation.repair(obj, ellipsoid_object, context.evaluated_depsgraph_get())
+            if result.skipped:
+                operator.report({'WARNING'}, "物体 '%s'：%s" % (obj.name, result.skipped))
+            elif result.flipped_faces:
+                operator.report({'INFO'}, "物体 '%s'：%d 张发片（共 %d 张）法线朝里，%d 个面已翻到朝外" % (
+                    obj.name, result.flipped_cards, result.cards, result.flipped_faces))
+        for material in session.hair_materials(obj):
+            if material not in materials:
+                materials.add(material)
+                closed = importer.repair_switches(importer.stack_of(material), material)
+                if closed:
+                    operator.report({'INFO'}, "材质 '%s' 没有绑角色自己的贴图，已关掉开关 %s" % (material.name, "、".join(closed)))
+    context.view_layer.update()
+
+
 def _start_preview(operator, context, options):
     options.previewing = True
     unwired = session.reconcile()
@@ -64,7 +90,8 @@ def _start_preview(operator, context, options):
 
 class SHIYUME_OT_EndfieldHighlightCreate(bpy.types.Operator):
     """按选中头发的形状估一个合适的高光椭球并开始实时预览；已经有椭球时把它重置到估算的位置。
-    椭球是低模加细分修改器、只显示网格线，进物体模式移动、旋转、缩放它（或进编辑模式改外壳）来调高光，头发上的高光实时跟着变"""
+    椭球是低模加细分修改器、只显示网格线，进物体模式移动、旋转、缩放它（或进编辑模式改外壳）来调高光，头发上的高光实时跟着变。
+    会先自动修好让高光画错的两处：法线明显朝里的发片翻朝外，没绑角色自己贴图的材质关掉对应开关"""
     bl_idname = "shiyume.endfield_highlight_create"
     bl_label = "创建高光椭球并预览"
     bl_options = {'REGISTER', 'UNDO'}
@@ -89,6 +116,7 @@ class SHIYUME_OT_EndfieldHighlightCreate(bpy.types.Operator):
             collection = hair[0].users_collection[0] if hair[0].users_collection else context.scene.collection
             options.ellipsoid = ellipsoid.create(context, placement, collection)
         _store_hair(options, hair)
+        _repair_hair(self, context, hair, options.ellipsoid)
         if not _start_preview(self, context, options):
             self.report({'ERROR'}, "椭球已摆好，但实时预览没能开始")
             return {'CANCELLED'}
@@ -97,7 +125,8 @@ class SHIYUME_OT_EndfieldHighlightCreate(bpy.types.Operator):
 
 
 class SHIYUME_OT_EndfieldHighlightPreview(bpy.types.Operator):
-    """开始实时预览：选中的头发（没选就用上次预览的）的高光法线实时取椭球的法线，不动贴图"""
+    """开始实时预览：选中的头发（没选就用上次预览的）的高光法线实时取椭球的法线，不动贴图；
+    会先自动修好让高光画错的两处：法线明显朝里的发片翻朝外，没绑角色自己贴图的材质关掉对应开关"""
     bl_idname = "shiyume.endfield_highlight_preview"
     bl_label = "开始预览"
     bl_options = {'REGISTER', 'UNDO'}
@@ -113,6 +142,7 @@ class SHIYUME_OT_EndfieldHighlightPreview(bpy.types.Operator):
             self.report({'ERROR'}, NEEDS_HAIR)
             return {'CANCELLED'}
         _store_hair(options, hair)
+        _repair_hair(self, context, hair, options.ellipsoid)
         if not _start_preview(self, context, options):
             self.report({'ERROR'}, "实时预览没能开始")
             return {'CANCELLED'}
@@ -136,7 +166,8 @@ class SHIYUME_OT_EndfieldHighlightStop(bpy.types.Operator):
 
 class SHIYUME_OT_EndfieldHighlightBake(bpy.types.Operator):
     """把椭球的高光法线烘焙进头发的分离法线贴图的 B、A 通道（R、G 不动，贴图里别的像素原样保留），停止实时预览。
-    装了 RuriRipperImporter 就和头发程序化生成一样新建（或更新）一张按它的头发着色栈编出来的材质球挂上去，原材质保留"""
+    装了 RuriRipperImporter 就和头发程序化生成一样新建（或更新）一张按它的头发着色栈编出来的材质球挂上去，原材质保留；
+    会先自动修好让高光画错的两处：法线明显朝里的发片翻朝外，没绑角色自己贴图的材质关掉对应开关"""
     bl_idname = "shiyume.endfield_highlight_bake"
     bl_label = "烘焙高光法线"
     bl_options = {'REGISTER', 'UNDO'}
@@ -178,6 +209,7 @@ class SHIYUME_OT_EndfieldHighlightBake(bpy.types.Operator):
             self.report({'ERROR'}, NEEDS_HAIR)
             return {'CANCELLED'}
         settings = targets.Settings(target_options.output_dir, int(target_options.resolution), target_options.variant.strip(), False)
+        _repair_hair(self, context, hair, options.ellipsoid)
         depsgraph = context.evaluated_depsgraph_get()
         batches = {}
         generations = {}
