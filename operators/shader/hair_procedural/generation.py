@@ -33,10 +33,10 @@ def _quantized(values):
 
 
 def collect(objects, scene, uv_layer_name, settings, problems):
-    """返回 ({落点键: Batch}, {物体名: Generation}, [不规则孤岛的原因汇总])。"""
+    """返回 ({落点键: Batch}, {物体名: Generation}, [按包围盒近似的孤岛的原因汇总])。"""
     batches = {}
     generations = {}
-    rejected = []
+    approximated = []
     for obj in objects:
         mesh = obj.data
         bm = bmesh.new()
@@ -49,11 +49,10 @@ def collect(objects, scene, uv_layer_name, settings, problems):
             if uv_layer is None:
                 problems.append("物体 '%s' 没有 UV 层 '%s'，跳过" % (obj.name, uv_name))
                 continue
-            found, skipped = strips.collect(obj, bm, uv_layer, scene)
-            rejected.extend(skipped)
+            found, estimated = strips.collect(obj, bm, uv_layer, scene)
+            approximated.extend(estimated)
             table = attributes.build(found, uv_layer)
             included = np.zeros(len(bm.faces), dtype=bool)
-            regular = np.zeros(len(bm.faces), dtype=bool)
             for index, slot in enumerate(obj.material_slots):
                 layer = slot.material
                 if not layers.is_layer(layer):
@@ -72,7 +71,6 @@ def collect(objects, scene, uv_layer_name, settings, problems):
                 if not len(quads.face):
                     continue
                 included[quads.face] = True
-                regular[quads.face[quads.regular]] = True
                 key = targets.key_of(original, settings)
                 if key not in batches:
                     try:
@@ -86,10 +84,10 @@ def collect(objects, scene, uv_layer_name, settings, problems):
                 batch.parts.append(Part(quads, parameters))
                 base = layers.base_slot(obj, original) if layers.is_local(layer) else index
                 batch.bindings.append(targets.Binding(obj, base, original, uv_name, render_uv_name))
-            generations[obj.name] = occupancy.Generation(uv_name, included, regular)
+            generations[obj.name] = occupancy.Generation(uv_name, included)
         finally:
             bm.free()
-    return batches, generations, rejected
+    return batches, generations, approximated
 
 
 def write(batch, margin, generations, settings, problems):
@@ -105,20 +103,17 @@ def write(batch, margin, generations, settings, problems):
         values = np.zeros((height, width, len(outputs)), dtype=np.float32)
         conflicts = 0
         for part in batch.parts:
-            quads = quad_module.select(part.quads, part.quads.regular) if is_normal else part.quads
-            if not len(quads.face):
-                continue
-            field = raster.generate(quads, part.parameters, outputs, width, height)
+            field = raster.generate(part.quads, part.parameters, outputs, width, height)
             conflicts += field.conflicts
             values[field.covered] = field.values[field.covered]
             covered |= field.covered
         if not covered.any():
-            problems.append("'%s' 上没有面落进贴图范围%s" % (channel.anchored.name, "（法线只生成规则长条）" if is_normal else ""))
+            problems.append("'%s' 上没有面落进贴图范围" % channel.anchored.name)
             continue
         if conflicts:
             problems.append("'%s' 里有 %d 个像素被不同发片的 UV 重叠覆盖，纹路在那里会互相盖掉" % (channel.anchored.name, conflicts))
         values = _quantized(values)
-        blocked = occupancy.protected(target.key, width, height, generations, settings, is_normal)
+        blocked = occupancy.protected(target.key, width, height, generations, settings)
         channel.anchored.paint(values, covered, channel.destination, channel.alpha, margin, blocked)
         texels += int(covered.sum())
         if not is_normal:

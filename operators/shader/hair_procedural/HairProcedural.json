@@ -3,7 +3,7 @@
   "PreviewName": "ShiyumeHairPreview",
   "AttributePrefix": ".Shiyume",
   "MaximumAttributes": 15,
-  "Version": 4,
+  "Version": 5,
   "Sources": ["HairNoise.Math", "HairColor.Math", "HairProcedural.Math"],
   "Constants": {
     "Overshoot": 0.05,
@@ -88,7 +88,6 @@
     {"Name": "positionX", "Label": "位置 X (mm)", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 0.0, "Min": -1000000.0, "Max": 1000000.0, "Attribute": "Pack3", "Component": 0},
     {"Name": "positionY", "Label": "位置 Y (mm)", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 0.0, "Min": -1000000.0, "Max": 1000000.0, "Attribute": "Pack3", "Component": 1},
     {"Name": "positionZ", "Label": "位置 Z (mm)", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 0.0, "Min": -1000000.0, "Max": 1000000.0, "Attribute": "Pack3", "Component": 2},
-    {"Name": "regular", "Label": "规则长条", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 1.0, "Min": 0.0, "Max": 1.0, "Attribute": "Pack5", "Component": 2},
     {"Name": "frameAcrossX", "Label": "横向在切线空间 X", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 1.0, "Min": -1.0, "Max": 1.0, "Attribute": "Pack4", "Component": 0},
     {"Name": "frameAcrossY", "Label": "横向在切线空间 Y", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 0.0, "Min": -1.0, "Max": 1.0, "Attribute": "Pack4", "Component": 1},
     {"Name": "frameAlongX", "Label": "纵向在切线空间 X", "Panel": "发片坐标（来自网格属性）", "Type": "Float", "Default": 0.0, "Min": -1.0, "Max": 1.0, "Attribute": "Pack4", "Component": 2},

@@ -1,7 +1,7 @@
 """RuriRipperImporter 的接口：装了它，生成的法线与颜色就挂在按它的头发着色栈新建的材质球上，立刻能预览。
 
-材质记录（ruri_uber_*）是内容，节点树是栈照记录编出来的：新材质 = 拿一张头发材质当模板抄它的记录、
-换上生成的图、让栈照记录编一张。
+材质记录（ruri_uber_*）是内容，节点树是栈照记录编出来的：新材质 = 取一份记录、换上生成的图、让栈照记录编一张；
+文件里有导入的头发材质就抄它的记录，一张都没有就取栈声明的游戏缺省。
 """
 
 import functools
@@ -34,8 +34,14 @@ def panel():
     return None
 
 
+def stack():
+    """导入器注册的头发着色栈（栈键在 ImporterSlots.json），没装导入器或它没注册这个栈返回 None。"""
+    host = panel()
+    return host.stack_by_key(slots()["Stack"]) if host is not None else None
+
+
 def available():
-    return panel() is not None
+    return stack() is not None
 
 
 def stack_of(material):
@@ -45,26 +51,20 @@ def stack_of(material):
 
 
 def is_hair(material):
-    return material.get(PART_KEY) == slots()["Part"] and stack_of(material) is not None
-
-
-def other_part(material):
-    """材质是导入器别的部件（脸、身体、衣服……）时返回部件名，不是返回 None。"""
-    if material is None or stack_of(material) is None or material.get(PART_KEY) == slots()["Part"]:
-        return None
-    return material.get(PART_KEY) or ""
+    claimed = stack_of(material)
+    return claimed is not None and claimed is stack() and material.get(PART_KEY) == slots()["Part"]
 
 
 def find_template(preferred):
     """生成用的模板头发材质：物体自己用的这张是我们生成的就回到它的原材质，不是就用它自己；
-    都不行再在文件里找任何一张别人导入的头发材质（不是我们生成的）。"""
+    都不行再在文件里找任何一张别人导入的头发材质（不是我们生成的）；一张都没有返回 None。"""
     origin = bpy.data.materials.get(preferred.get(MARKER, "")) if preferred is not None else None
     candidates = [origin or preferred] + [material for material in bpy.data.materials
                                           if material.library is None and MARKER not in material and material is not preferred]
     for material in candidates:
         if material is not None and is_hair(material):
-            return stack_of(material), material
-    return None, None
+            return material
+    return None
 
 
 def _plain(value):
@@ -77,28 +77,47 @@ def _plain(value):
     return value
 
 
-def shader_of(stack, template):
-    return str(template[stack.SHADING_KEY]["name"])
-
-
 def template_image(template, slot):
-    images = template.get(IMAGES_KEY)
+    images = template.get(IMAGES_KEY) if template is not None else None
     image = images.get(slot) if images is not None else None
     return image if isinstance(image, bpy.types.Image) else None
 
 
-def build(stack, template, name, images):
-    """照模板的记录新编一张材质：记录整份抄来，hair 的贴图槽换成生成的图，名字给 name。"""
+def copied_record(stack, template, images):
+    """模板的记录整份抄来，贴图槽换成生成的图；记录以外的键（基座骨名之类）也跟着抄，栈自己写的与我们的标记除外。"""
     skipped = set(stack.RECORD_KEYS) | set(stack.SUPERSEDED_KEYS) | {STACK_KEY, stack.BLEND_KEY, stack.SHADING_KEY, MARKER}
+    record = {key: _plain(template[key]) for key in stack.RECORD_KEYS}
+    record[IMAGES_KEY] = dict(record[IMAGES_KEY], **images)
+    record.update({key: _plain(template[key]) for key in template.keys() if key not in skipped})
+    return record
+
+
+def default_record(stack, images):
+    """栈声明的游戏缺省记录：参数取作者模式的缺省，描边那一趟按部件声明的标签记上，贴图只有给的这些。"""
+    part = slots()["Part"]
+    meta = stack.PART_META[part]
+    defaults = stack.SCHEMA_DEFAULTS[part]
+    return {
+        PART_KEY: part,
+        IMAGES_KEY: dict(images),
+        "ruri_uber_floats": {name: float(value[0]) for name, value in defaults.items() if len(value) == 1},
+        "ruri_uber_colors": {name: [float(component) for component in value] for name, value in defaults.items() if len(value) != 1},
+        "ruri_uber_st": {},
+        "ruri_uber_disabled_passes": [],
+        "ruri_uber_shader_passes": list(meta["outline"]),
+        "ruri_uber_shader_guid": "",
+        "ruri_uber_shader": meta["shader"],
+    }
+
+
+def build(stack, template, name, images):
+    """新编一张材质：有模板就抄它的记录，没有就取栈声明的游戏缺省；hair 的贴图槽换成生成的图，名字给 name。"""
+    record = default_record(stack, images) if template is None else copied_record(stack, template, images)
     recipe = bpy.data.materials.new(name + FAKE_RECIPE_SUFFIX)
-    for key in stack.RECORD_KEYS:
-        recipe[key] = _plain(template[key])
-    recipe[IMAGES_KEY] = dict(_plain(template[IMAGES_KEY]), **images)
-    for key in template.keys():
-        if key not in skipped:
-            recipe[key] = _plain(template[key])
-    recipe[STACK_KEY] = stack.PANEL_KEY
     try:
+        for key, value in record.items():
+            recipe[key] = value
+        recipe[STACK_KEY] = stack.PANEL_KEY
         material = stack.recompile(recipe)
     finally:
         bpy.data.materials.remove(recipe)

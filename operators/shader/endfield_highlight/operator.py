@@ -188,7 +188,7 @@ class SHIYUME_OT_EndfieldHighlightBake(bpy.types.Operator):
                 problems.append("物体 '%s' 没有 UV 层，跳过" % obj.name)
                 continue
             faces = np.ones(len(obj.data.polygons), dtype=bool)
-            generations[obj.name] = occupancy.Generation(uv_name, faces, faces)
+            generations[obj.name] = occupancy.Generation(uv_name, faces)
             self._assign(obj, uv_name, bake.triangles_of(obj, depsgraph, uv_name), bake.surface_of(options.ellipsoid, obj, depsgraph),
                          settings, batches, problems)
 
@@ -201,7 +201,7 @@ class SHIYUME_OT_EndfieldHighlightBake(bpy.types.Operator):
             if not field.covered.any():
                 problems.append("'%s' 上没有面落进贴图范围" % batch.target.normal.name)
                 continue
-            fields.append((batch, field, occupancy.protected(batch.target.key, width, height, generations, settings, False)))
+            fields.append((batch, field, occupancy.protected(batch.target.key, width, height, generations, settings)))
 
         session.stop(scene)
         messages = []

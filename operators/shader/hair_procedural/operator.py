@@ -10,7 +10,6 @@ from collections import Counter
 import bmesh
 import bpy
 
-from ..endfield_target import importer
 from ..endfield_target import shader_link
 from ..endfield_target import targets
 from . import generation
@@ -33,6 +32,14 @@ def _selected_meshes(context):
     return [obj for obj in context.selected_objects if obj.type == 'MESH']
 
 
+def _approximation_note(approximated):
+    reasons = Counter()
+    for reason, face_count in approximated:
+        reasons[reason] += face_count
+    return "%d 个孤岛不是规则四边形长条，按 UV 包围盒近似排布后照常生成颜色与法线：%s" % (
+        len(approximated), "；".join("%s（共 %d 个面）" % item for item in reasons.most_common(3)))
+
+
 def _discard_layers():
     """把所有带预览层的物体还原，删掉预览材质、网格上的预览属性与程序节点组。"""
     for obj in layers.objects_with_layers():
@@ -48,7 +55,7 @@ def _discard_layers():
 class SHIYUME_OT_HairPreviewStart(bpy.types.Operator):
     """给选中的头发物体的每个材质槽换上程序预览材质（自发光，所见即烘焙的内容），参数在侧栏随时调。
     头发、羽毛这些不同材质的基础层共用同一套参数，发色与纹路一致；要换发色就编辑模式选面做局部层。
-    要求发片是「修复头发展开」那种规则的四边形长条 UV 孤岛；原材质不丢，取消或烘焙时还原"""
+    发片是「修复头发展开」那种规则的四边形长条 UV 孤岛时纹路最准，别的孤岛按 UV 包围盒近似排布，照常生成；原材质不丢，取消或烘焙时还原"""
     bl_idname = "shiyume.hair_preview_start"
     bl_label = "开始预览"
     bl_options = {'REGISTER', 'UNDO'}
@@ -72,13 +79,7 @@ class SHIYUME_OT_HairPreviewStart(bpy.types.Operator):
         made = {}
         objects = 0
         for obj in _selected_meshes(context):
-            candidates = []
-            for slot in obj.material_slots:
-                part = importer.other_part(slot.material) if slot.material is not None else None
-                if part is not None:
-                    self.report({'WARNING'}, "材质 '%s' 是导入器的 %s 部件，不是头发，没有动它" % (slot.material.name, part or "未命名"))
-                elif slot.material is not None and not layers.is_layer(slot.material):
-                    candidates.append(slot)
+            candidates = [slot for slot in obj.material_slots if slot.material is not None and not layers.is_layer(slot.material)]
             if not candidates and not any(layers.is_layer(slot.material) for slot in obj.material_slots):
                 self.report({'WARNING'}, "物体 '%s' 没有可预览的材质，跳过" % obj.name)
                 continue
@@ -216,7 +217,7 @@ class SHIYUME_OT_HairPreviewCancel(bpy.types.Operator):
 class SHIYUME_OT_HairPreviewBake(bpy.types.Operator):
     """把所有预览层按各自的参数烘焙进贴图：法线写分离法线贴图的 R、G（B、A 不动），颜色写 BaseMap，别的像素原样保留；
     然后删掉全部预览材质、网格属性与程序节点组。装了 RuriRipperImporter 就按它的头发着色栈新建（或更新）材质球挂上去，原材质保留；
-    没装就写「材质名_Normal.png」「材质名_BaseColor.png」并接到 Principled BSDF"""
+    文件里有导入的头发材质就抄它的参数，没有就取游戏缺省。没装就写「材质名_Normal.png」「材质名_BaseColor.png」并接到 Principled BSDF"""
     bl_idname = "shiyume.hair_preview_bake"
     bl_label = "烘焙并清理"
     bl_options = {'REGISTER', 'UNDO'}
@@ -232,13 +233,7 @@ class SHIYUME_OT_HairPreviewBake(bpy.types.Operator):
         settings = targets.Settings(target_options.output_dir, int(target_options.resolution), target_options.variant.strip(),
                                                options.generate_color)
         problems = []
-        batches, generations, rejected = generation.collect(layers.objects_with_layers(), scene, options.uv_layer, settings, problems)
-        if rejected:
-            reasons = Counter()
-            for reason, face_count in rejected:
-                reasons[reason] += face_count
-            self.report({'WARNING'}, "有 %d 个不是规则四边形长条的孤岛，颜色按 UV 包围盒近似生成，法线不生成：%s" % (
-                len(rejected), "；".join("%s（共 %d 个面）" % item for item in reasons.most_common(3))))
+        batches, generations, approximated = generation.collect(layers.objects_with_layers(), scene, options.uv_layer, settings, problems)
         written = [generation.write(batch, target_options.margin, generations, settings, problems) for batch in batches.values() if batch is not None]
         written = [item for item in written if item.texels]
         if not written:
@@ -247,7 +242,7 @@ class SHIYUME_OT_HairPreviewBake(bpy.types.Operator):
             self.report({'ERROR'}, "没有写出任何贴图，预览还留着")
             return {'CANCELLED'}
         _discard_layers()
-        messages = []
+        messages = [_approximation_note(approximated)] if approximated else []
         flat_shown = False
         for item in written:
             problems.extend(item.batch.target.notes())

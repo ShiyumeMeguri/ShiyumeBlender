@@ -17,7 +17,7 @@ STORAGE_TYPE = 'FLOAT_VECTOR'
 
 
 def write(obj, scene, uv_layer_name):
-    """给物体写（或刷新）全部角属性；返回 (发片数, 不规则孤岛的原因汇总)。物体要在物体模式。"""
+    """给物体写（或刷新）全部角属性；返回 (发片数, 按包围盒近似的孤岛的原因汇总)。物体要在物体模式。"""
     mesh = obj.data
     bm = bmesh.new()
     try:
@@ -26,7 +26,7 @@ def write(obj, scene, uv_layer_name):
         uv_layer = bm.loops.layers.uv.get(uv_layer_name or mesh_bind.render_uv_name(mesh))
         if uv_layer is None:
             raise ValueError("物体 '%s' 没有 UV 层 '%s'" % (obj.name, uv_layer_name))
-        found, rejected = strips.collect(obj, bm, uv_layer, scene)
+        found, approximated = strips.collect(obj, bm, uv_layer, scene)
         table = attributes.build(found, uv_layer)
     finally:
         bm.free()
@@ -41,7 +41,7 @@ def write(obj, scene, uv_layer_name):
         layer = mesh.attributes.get(attribute) or mesh.attributes.new(attribute, STORAGE_TYPE, STORAGE_DOMAIN)
         layer.data.foreach_set("vector", values.reshape(-1))
     mesh.update()
-    return len(found), rejected
+    return len(found), approximated
 
 
 def remove(obj):

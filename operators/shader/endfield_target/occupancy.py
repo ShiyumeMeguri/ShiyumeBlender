@@ -10,7 +10,7 @@ from ...uv.uv_transfer import kernel
 from ...uv.uv_transfer import mesh_bind
 from . import targets
 
-Generation = namedtuple("Generation", ("uv_name", "included", "regular"))
+Generation = namedtuple("Generation", ("uv_name", "included"))
 
 PROTECTION_RING = 1
 
@@ -49,9 +49,9 @@ def _edit_triangles(mesh, uv_name):
     return uv, polygons, materials
 
 
-def protected(key, width, height, generations, settings, regular_only):
+def protected(key, width, height, generations, settings):
     """目标图 key 上被生成范围以外的面占着的像素 (H, W) bool；generations 是 {物体名: Generation}，
-    不在里面的物体整个都算范围以外；法线通道的生成范围只有规则长条（regular_only），颜色通道是全部发片。"""
+    不在里面的物体整个都算范围以外。"""
     mask = np.zeros((height, width), dtype=bool)
     for obj in bpy.data.objects:
         if obj.type != 'MESH' or obj.data is None or not obj.material_slots:
@@ -69,6 +69,6 @@ def protected(key, width, height, generations, settings, regular_only):
         uv, polygons, materials = triangles
         keep = np.isin(np.minimum(materials, len(obj.material_slots) - 1), matching)
         if generation is not None:
-            keep &= ~(generation.regular if regular_only else generation.included)[polygons]
+            keep &= ~generation.included[polygons]
         mask |= kernel.coverage_mask(uv[keep], width, height, 1)
     return kernel.grow(mask, PROTECTION_RING)

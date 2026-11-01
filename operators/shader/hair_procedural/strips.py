@@ -3,7 +3,7 @@
 长条的 UV 是矩形，纹路在矩形里是竖条纹。程序（procedural）按「按 3D 折算」滑条把两种占比和尺度折成毫米坐标，所以这里只量不折算：
 规则的四边形长条（与「修复头发展开」同一把判据）按顶点排布精确量；发根一端取 UV 里 V 大的一边。
 不规则的孤岛（含三角形的发梢、不成网格的片）退而按 UV 包围盒近似，尺度取 UV 到 3D 位置的仿射拟合，发根取 3D 里较高的一端，
-只配套生成颜色用，法线纹路依赖精确的排布，不生成。
+一个孤岛也不丢，颜色与法线纹路照常生成。
 """
 
 import zlib
@@ -15,7 +15,7 @@ from ...uv import hair_strip_unwrap
 from ...uv import uv_islands
 
 Strip = namedtuple("Strip", ("faces", "across_uv", "across_arc", "along_uv", "along_arc", "positions", "mean_width", "path_length",
-                             "uv_width", "uv_length", "index", "tag", "regular"))
+                             "uv_width", "uv_length", "index", "tag"))
 
 MILLIMETRES_PER_METRE = 1000.0
 DEGENERATE_LENGTH = 1.0e-9
@@ -74,7 +74,8 @@ def _measure(rows, uvs, matrix, millimetres_per_unit):
 
 def _approximate(faces, uvs, uv_layer, matrix, millimetres_per_unit):
     """按 UV 包围盒近似：横向取 U、长度取 V，发根在 3D 里较高的一端；
-    毫米尺度取 UV 到 3D 位置的仿射拟合，U、V 两个方向各量各的，UV 各向异性缩放也折算得对。"""
+    毫米尺度取 UV 到 3D 位置的仿射拟合，U、V 两个方向各量各的，UV 各向异性缩放也折算得对。
+    退化的包围盒（UV 或 3D 里压成一条线）占不到贴图像素，尺度只取下限让除法有意义，不拒绝。"""
     vertices = {}
     positions = {}
     for face in faces:
@@ -84,32 +85,28 @@ def _approximate(faces, uvs, uv_layer, matrix, millimetres_per_unit):
             positions[loop.vert] = tuple(world_position * millimetres_per_unit)
     values = np.array(list(vertices.values()))
     low = values[:, :2].min(axis=0)
-    span = values[:, :2].max(axis=0) - low
-    if min(span) < DEGENERATE_LENGTH:
-        raise hair_strip_unwrap.UnsupportedIsland("包围盒退化")
+    span = np.maximum(values[:, :2].max(axis=0) - low, DEGENERATE_LENGTH)
     design = np.column_stack((values[:, :2], np.ones(len(values))))
     world = np.array([positions[vertex] for vertex in vertices])
     solution = np.linalg.lstsq(design, world, rcond=None)[0]
-    width = float(span[0]) * float(np.linalg.norm(solution[0]))
-    length = float(span[1]) * float(np.linalg.norm(solution[1]))
-    if min(width, length) < DEGENERATE_LENGTH:
-        raise hair_strip_unwrap.UnsupportedIsland("包围盒退化")
-    slope = np.polyfit(values[:, 1], values[:, 2], 1)[0]
+    width = max(float(span[0]) * float(np.linalg.norm(solution[0])), DEGENERATE_LENGTH)
+    length = max(float(span[1]) * float(np.linalg.norm(solution[1])), DEGENERATE_LENGTH)
+    covariance = float(np.dot(values[:, 1] - values[:, 1].mean(), values[:, 2] - values[:, 2].mean()))
     across = {}
     along = {}
     for vertex, (u, v, _height) in vertices.items():
         across[vertex] = (u - low[0]) / span[0]
-        along[vertex] = ((low[1] + span[1] - v) if slope > 0.0 else (v - low[1])) / span[1]
+        along[vertex] = ((low[1] + span[1] - v) if covariance > 0.0 else (v - low[1])) / span[1]
     return across, across, along, along, positions, width, length, float(span[0]), float(span[1])
 
 
 def collect(obj, bm, uv_layer, scene):
-    """返回 ([Strip], [(不规则的原因, 面数)])：规则长条精确量；不规则的孤岛按包围盒近似也放进列表（regular 为假），原因另外记下。"""
+    """返回 ([Strip], [(按包围盒近似的原因, 面数)])：规则长条精确量，别的孤岛按包围盒近似，一个不丢，近似的原因另外记下。"""
     millimetres_per_unit = scene.unit_settings.scale_length * MILLIMETRES_PER_METRE
     matrix = obj.matrix_world
     tag = zlib.crc32(obj.name.encode("utf-8")) & TAG_MASK
     strips = []
-    irregular = []
+    approximated = []
     for faces in uv_islands.collect_islands(bm, uv_layer):
         height_of_vertex = {loop.vert: loop[uv_layer].uv.y for face in faces for loop in face.loops}
         uvs = {loop.vert: tuple(loop[uv_layer].uv) for face in faces for loop in face.loops}
@@ -117,13 +114,8 @@ def collect(obj, bm, uv_layer, scene):
             rows = hair_strip_unwrap.root_first(
                 hair_strip_unwrap.strip_rows(faces), lambda vertex: -height_of_vertex[vertex])
             values = _measure(rows, uvs, matrix, millimetres_per_unit)
-            regular = True
         except hair_strip_unwrap.UnsupportedIsland as error:
-            irregular.append((str(error), len(faces)))
-            try:
-                values = _approximate(faces, uvs, uv_layer, matrix, millimetres_per_unit)
-            except hair_strip_unwrap.UnsupportedIsland:
-                continue
-            regular = False
-        strips.append(Strip(faces, *values, min(face.index for face in faces), tag, regular))
-    return strips, irregular
+            approximated.append((str(error), len(faces)))
+            values = _approximate(faces, uvs, uv_layer, matrix, millimetres_per_unit)
+        strips.append(Strip(faces, *values, min(face.index for face in faces), tag))
+    return strips, approximated

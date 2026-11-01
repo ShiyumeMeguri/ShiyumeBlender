@@ -1,4 +1,4 @@
-"""发片每个面角的程序输入：占比、尺度、编号、规则与否，以及纹路的横向与纵向在这个角的切线空间里的两个分量。
+"""发片每个面角的程序输入：占比、尺度、编号，以及纹路的横向与纵向在这个角的切线空间里的两个分量。
 
 烘焙从这张表取四边形的四个角，实时预览把同一张表写成网格的角属性，两边的输入是同一份。
 纹路方向取 UV 占比的梯度（与折算滑条无关）：一个面角的两个邻角和它自己组成三角形，量出该三角形里的两个方向，
@@ -72,7 +72,7 @@ def build(strips, uv_layer):
     offset = {}
     for strip in strips:
         constants = {"uvWidth": strip.uv_width, "uvLength": strip.uv_length, "meanWidth": strip.mean_width, "pathLength": strip.path_length,
-                     "stripId": float(strip.index), "objectTag": float(strip.tag), "regular": 1.0 if strip.regular else 0.0}
+                     "stripId": float(strip.index), "objectTag": float(strip.tag)}
         for face in strip.faces:
             members = list(face.loops)
             offset[face.index] = len(loops)

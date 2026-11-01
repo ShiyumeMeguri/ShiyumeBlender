@@ -1,7 +1,8 @@
 """贴图落点：生成的法线与颜色写进哪几张图、挂到哪张材质上。
 
 装了 RuriRipperImporter：新建（或更新）一张按它的头发着色栈编出来的材质球，法线进它的分离法线贴图的 R、G，颜色进它的 BaseMap；
-两张图都先拷模板材质原来的图，再只写生成范围，范围外与别的通道原样不动；材质换到发片用的槽上，原来的材质保留。
+文件里有导入的头发材质就拿它当模板，两张图都先拷模板原来的图、参数也抄它的；一张都没有就取栈声明的游戏缺省参数，两张图的初值是纯平的；
+再只写生成范围，范围外与别的通道原样不动；材质换到发片用的槽上，原来的材质保留。
 没装：每张材质一对锚定贴图（材质名_Normal.png、材质名_BaseColor.png），接到 Principled BSDF 上。
 锚定名只由材质名决定（去掉 Blender 的 .001 重名后缀），重启后按名字找回，不依赖任何会丢的状态。
 """
@@ -213,7 +214,7 @@ class ImporterTarget:
         self.color_slot = names["ColorSlot"]
         self.normal_channels = tuple(names["NormalChannels"])
         self.highlight_channels = tuple(names["HighlightChannels"])
-        shader = importer.shader_of(stack, template)
+        shader = stack.MATERIAL_NAME
         variant = "_".join(part for part in (_variant_part(settings).lstrip("_"), GENERATED_SUFFIX.lstrip("_")) if part)
         self.normal = Anchored(texture_stem(shader, self.base, self.normal_slot, variant), settings.directory, DATA_COLORSPACE,
                                settings.resolution, importer.template_image(template, self.normal_slot), FLAT_SPLIT_NORMAL)
@@ -241,7 +242,8 @@ class ImporterTarget:
         material = bpy.data.materials.get(self.name)
         if material is None:
             material = importer.build(self.stack, self.template, self.name, images)
-            messages.append("新建材质 '%s'（照导入器的头发着色栈）" % self.name)
+            messages.append("新建材质 '%s'（照导入器的头发着色栈，参数%s）" % (
+                self.name, "抄自 '%s'" % self.template.name if self.template is not None else "取游戏缺省"))
         else:
             importer.rebind(self.stack, material, images)
             messages.append("更新材质 '%s'" % self.name)
@@ -265,12 +267,7 @@ def template_base(material):
 
 
 def resolve(material, settings):
-    if importer.available():
-        part = importer.other_part(material)
-        if part is not None:
-            raise TargetError("材质 '%s' 是导入器的 %s 部件，不是头发，没有动它" % (material.name, part or "未命名"))
-        stack, template = importer.find_template(material)
-        if stack is None:
-            raise TargetError("文件里没有 RuriRipperImporter 导入的头发材质可当模板：先用导入器载入头发")
-        return ImporterTarget(material, settings, stack, template)
-    return FileTarget(material, settings)
+    stack = importer.stack()
+    if stack is None:
+        return FileTarget(material, settings)
+    return ImporterTarget(material, settings, stack, importer.find_template(material))

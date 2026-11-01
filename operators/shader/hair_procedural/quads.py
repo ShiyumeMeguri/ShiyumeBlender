@@ -12,7 +12,7 @@ import numpy as np
 DIVISIONS = 4
 TRIANGLES_PER_QUAD = 2 * DIVISIONS * DIVISIONS
 
-Quads = namedtuple("Quads", ("uv", "attributes", "strip", "slot", "face", "regular"))
+Quads = namedtuple("Quads", ("uv", "attributes", "strip", "slot", "face"))
 
 TAG_SHIFT = 20
 
@@ -26,7 +26,7 @@ def _corner_sets(count):
 
 def build(strips, uv_layer, table, include):
     """把发片里 include(face) 为真的面取成数组：每个角的 UV 与程序输入行（table 来自 attributes.build），
-    每个面所属发片的编号、材质槽、面下标与是否规则。"""
+    每个面所属发片的编号、材质槽与面下标。"""
     count = sum(len(_corner_sets(len(face.loops))) for strip in strips for face in strip.faces if include(face))
     width = table.values.shape[1]
     uv = np.zeros((count, 4, 2), np.float32)
@@ -34,7 +34,6 @@ def build(strips, uv_layer, table, include):
     strip_id = np.zeros(count, np.int64)
     slot = np.zeros(count, np.int32)
     face_index = np.zeros(count, np.int32)
-    regular = np.zeros(count, bool)
     cursor = 0
     for strip in strips:
         for face in strip.faces:
@@ -49,13 +48,8 @@ def build(strips, uv_layer, table, include):
                 strip_id[cursor] = (strip.tag << TAG_SHIFT) | strip.index
                 slot[cursor] = face.material_index
                 face_index[cursor] = face.index
-                regular[cursor] = strip.regular
                 cursor += 1
-    return Quads(uv, attributes, strip_id, slot, face_index, regular)
-
-
-def select(quads, mask):
-    return Quads(*(array[mask] for array in quads))
+    return Quads(uv, attributes, strip_id, slot, face_index)
 
 
 def concatenate(parts):
